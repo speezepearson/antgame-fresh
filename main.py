@@ -3,15 +3,13 @@ from __future__ import annotations
 import pygame
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Literal
 
 
 # --- Game Constants ---
 GRID_SIZE = 32
-TILE_SIZE = 20
+TILE_SIZE = 16
 MAP_PIXEL_SIZE = GRID_SIZE * TILE_SIZE
 
-# Visibility radius (Manhattan distance) around home base
 VISIBILITY_RADIUS = 8
 
 
@@ -20,21 +18,13 @@ class Team(Enum):
     BLUE = "BLUE"
 
 
-@dataclass
+@dataclass(frozen=True)
 class Pos:
     x: int
     y: int
 
     def manhattan_distance(self, other: Pos) -> int:
         return abs(self.x - other.x) + abs(self.y - other.y)
-
-    def __eq__(self, other: object) -> bool:
-        if not isinstance(other, Pos):
-            return False
-        return self.x == other.x and self.y == other.y
-
-    def __hash__(self) -> int:
-        return hash((self.x, self.y))
 
 
 @dataclass
@@ -43,11 +33,24 @@ class MoveOrder:
     then_return_home: bool = False
 
 
+# A snapshot of what a unit observed at a specific tick
+@dataclass
+class Observation:
+    tick: int
+    observer_pos: Pos
+    # All unit positions visible from observer_pos at that tick
+    visible_units: list[tuple[Team, Pos]]
+
+
 @dataclass
 class Unit:
     team: Team
     pos: Pos
     order: MoveOrder | None = None
+    # Observations accumulated while away from base, not yet reported
+    pending_observations: list[Observation] = field(default_factory=list)
+    # Whether unit was near base last tick (to detect "returning home")
+    was_near_base: bool = True
 
     def home_base(self) -> Pos:
         if self.team == Team.RED:
@@ -55,14 +58,57 @@ class Unit:
         else:
             return Pos(GRID_SIZE - 3, GRID_SIZE // 2)
 
+    def is_near_base(self) -> bool:
+        return self.pos.manhattan_distance(self.home_base()) <= VISIBILITY_RADIUS
+
+
+# The report log stores, for each tick, what positions were visible and what units were seen
+@dataclass
+class ReportLog:
+    # tick -> set of visible positions at that tick
+    visible_tiles: dict[int, set[Pos]] = field(default_factory=dict)
+    # tick -> list of (team, pos) for units seen at that tick
+    seen_units: dict[int, list[tuple[Team, Pos]]] = field(default_factory=dict)
+
+    def merge_observation(self, obs: Observation) -> None:
+        """Merge an observation into the report log."""
+        tick = obs.tick
+        if tick not in self.visible_tiles:
+            self.visible_tiles[tick] = set()
+        if tick not in self.seen_units:
+            self.seen_units[tick] = []
+
+        # Add all tiles visible from observer position
+        for dx in range(-VISIBILITY_RADIUS, VISIBILITY_RADIUS + 1):
+            for dy in range(-VISIBILITY_RADIUS, VISIBILITY_RADIUS + 1):
+                if abs(dx) + abs(dy) <= VISIBILITY_RADIUS:
+                    tile = Pos(obs.observer_pos.x + dx, obs.observer_pos.y + dy)
+                    if 0 <= tile.x < GRID_SIZE and 0 <= tile.y < GRID_SIZE:
+                        self.visible_tiles[tick].add(tile)
+
+        # Add seen units
+        self.seen_units[tick].extend(obs.visible_units)
+
+    def get_visible_at_tick(self, tick: int) -> tuple[set[Pos], list[tuple[Team, Pos]]]:
+        """Get visibility info for a specific tick."""
+        tiles = self.visible_tiles.get(tick, set())
+        units = self.seen_units.get(tick, [])
+        return tiles, units
+
 
 @dataclass
 class GameState:
+    tick: int = 0
     units: list[Unit] = field(default_factory=list)
     selected_unit: Unit | None = None
+    # Each team's report log
+    report_logs: dict[Team, ReportLog] = field(default_factory=dict)
+    # Slider positions for each team's view (which tick they're viewing)
+    view_tick: dict[Team, int] = field(default_factory=dict)
+    # Whether each player's view auto-advances to current tick
+    view_live: dict[Team, bool] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        # Create initial units for each team
         red_base = Pos(2, GRID_SIZE // 2)
         blue_base = Pos(GRID_SIZE - 3, GRID_SIZE // 2)
 
@@ -70,15 +116,56 @@ class GameState:
             self.units.append(Unit(Team.RED, Pos(red_base.x, red_base.y - 1 + i)))
             self.units.append(Unit(Team.BLUE, Pos(blue_base.x, blue_base.y - 1 + i)))
 
+        self.report_logs[Team.RED] = ReportLog()
+        self.report_logs[Team.BLUE] = ReportLog()
+        self.view_tick[Team.RED] = 0
+        self.view_tick[Team.BLUE] = 0
+        self.view_live[Team.RED] = True
+        self.view_live[Team.BLUE] = True
+
+        # Record initial observations (units start at base)
+        self._record_all_near_base_observations()
+
     def get_base_pos(self, team: Team) -> Pos:
         if team == Team.RED:
             return Pos(2, GRID_SIZE // 2)
         else:
             return Pos(GRID_SIZE - 3, GRID_SIZE // 2)
 
+    def _record_all_near_base_observations(self) -> None:
+        """Record observations from all units currently near their base."""
+        for unit in self.units:
+            if unit.is_near_base():
+                visible_units: list[tuple[Team, Pos]] = []
+                for other in self.units:
+                    if other.pos.manhattan_distance(unit.pos) <= VISIBILITY_RADIUS:
+                        visible_units.append((other.team, other.pos))
+                obs = Observation(
+                    tick=self.tick,
+                    observer_pos=unit.pos,
+                    visible_units=visible_units,
+                )
+                self.report_logs[unit.team].merge_observation(obs)
+
 
 def tick_game(state: GameState) -> None:
     """Advance the game by one tick."""
+    # First, record observations for all units
+    for unit in state.units:
+        # What can this unit see right now?
+        visible_units: list[tuple[Team, Pos]] = []
+        for other in state.units:
+            if other.pos.manhattan_distance(unit.pos) <= VISIBILITY_RADIUS:
+                visible_units.append((other.team, other.pos))
+
+        obs = Observation(
+            tick=state.tick,
+            observer_pos=unit.pos,
+            visible_units=visible_units,
+        )
+        unit.pending_observations.append(obs)
+
+    # Move units
     for unit in state.units:
         if unit.order is None:
             continue
@@ -87,43 +174,51 @@ def tick_game(state: GameState) -> None:
         dx = 0 if target.x == unit.pos.x else (1 if target.x > unit.pos.x else -1)
         dy = 0 if target.y == unit.pos.y else (1 if target.y > unit.pos.y else -1)
 
-        # Move one step (prefer x then y)
         if dx != 0:
             unit.pos = Pos(unit.pos.x + dx, unit.pos.y)
         elif dy != 0:
             unit.pos = Pos(unit.pos.x, unit.pos.y + dy)
 
-        # Check if arrived at target
         if unit.pos == target:
             if unit.order.then_return_home:
-                # Queue return trip
                 unit.order = MoveOrder(target=unit.home_base(), then_return_home=False)
             else:
                 unit.order = None
+
+    # Check for units at base - they immediately report observations
+    for unit in state.units:
+        near_base_now = unit.is_near_base()
+        if near_base_now:
+            # Unit is at base - merge all pending observations immediately
+            for obs in unit.pending_observations:
+                state.report_logs[unit.team].merge_observation(obs)
+            unit.pending_observations.clear()
+        unit.was_near_base = near_base_now
+
+    state.tick += 1
+
+    # Record observations from all units currently at base (for the new tick)
+    state._record_all_near_base_observations()
 
 
 # --- Rendering ---
 
 def draw_grid(surface: pygame.Surface, offset_x: int, offset_y: int) -> None:
-    """Draw grid lines."""
     for x in range(GRID_SIZE + 1):
         pygame.draw.line(
-            surface,
-            (50, 50, 50),
+            surface, (50, 50, 50),
             (offset_x + x * TILE_SIZE, offset_y),
             (offset_x + x * TILE_SIZE, offset_y + MAP_PIXEL_SIZE),
         )
     for y in range(GRID_SIZE + 1):
         pygame.draw.line(
-            surface,
-            (50, 50, 50),
+            surface, (50, 50, 50),
             (offset_x, offset_y + y * TILE_SIZE),
             (offset_x + MAP_PIXEL_SIZE, offset_y + y * TILE_SIZE),
         )
 
 
 def draw_base(surface: pygame.Surface, pos: Pos, team: Team, offset_x: int, offset_y: int) -> None:
-    """Draw a home base marker."""
     color = (200, 50, 50) if team == Team.RED else (50, 50, 200)
     rect = pygame.Rect(
         offset_x + pos.x * TILE_SIZE + 2,
@@ -134,43 +229,22 @@ def draw_base(surface: pygame.Surface, pos: Pos, team: Team, offset_x: int, offs
     pygame.draw.rect(surface, color, rect, 3)
 
 
-def draw_unit(
+def draw_unit_at(
     surface: pygame.Surface,
-    unit: Unit,
+    team: Team,
+    pos: Pos,
     offset_x: int,
     offset_y: int,
     selected: bool = False,
 ) -> None:
-    """Draw a unit."""
-    color = (255, 100, 100) if unit.team == Team.RED else (100, 100, 255)
-    center_x = offset_x + unit.pos.x * TILE_SIZE + TILE_SIZE // 2
-    center_y = offset_y + unit.pos.y * TILE_SIZE + TILE_SIZE // 2
+    color = (255, 100, 100) if team == Team.RED else (100, 100, 255)
+    center_x = offset_x + pos.x * TILE_SIZE + TILE_SIZE // 2
+    center_y = offset_y + pos.y * TILE_SIZE + TILE_SIZE // 2
     radius = TILE_SIZE // 3
 
     pygame.draw.circle(surface, color, (center_x, center_y), radius)
-
     if selected:
         pygame.draw.circle(surface, (255, 255, 0), (center_x, center_y), radius + 3, 2)
-
-
-def draw_visibility_mask(
-    surface: pygame.Surface,
-    base_pos: Pos,
-    offset_x: int,
-    offset_y: int,
-) -> None:
-    """Draw fog of war for tiles outside visibility radius."""
-    for x in range(GRID_SIZE):
-        for y in range(GRID_SIZE):
-            tile_pos = Pos(x, y)
-            if tile_pos.manhattan_distance(base_pos) > VISIBILITY_RADIUS:
-                rect = pygame.Rect(
-                    offset_x + x * TILE_SIZE,
-                    offset_y + y * TILE_SIZE,
-                    TILE_SIZE,
-                    TILE_SIZE,
-                )
-                pygame.draw.rect(surface, (20, 20, 20), rect)
 
 
 def draw_god_view(
@@ -179,20 +253,18 @@ def draw_god_view(
     offset_x: int,
     offset_y: int,
 ) -> None:
-    """Draw the god's-eye view of the entire map."""
-    # Background
     bg_rect = pygame.Rect(offset_x, offset_y, MAP_PIXEL_SIZE, MAP_PIXEL_SIZE)
     pygame.draw.rect(surface, (30, 30, 30), bg_rect)
 
     draw_grid(surface, offset_x, offset_y)
-
-    # Bases
     draw_base(surface, state.get_base_pos(Team.RED), Team.RED, offset_x, offset_y)
     draw_base(surface, state.get_base_pos(Team.BLUE), Team.BLUE, offset_x, offset_y)
 
-    # Units
     for unit in state.units:
-        draw_unit(surface, unit, offset_x, offset_y, selected=(unit is state.selected_unit))
+        draw_unit_at(
+            surface, unit.team, unit.pos, offset_x, offset_y,
+            selected=(unit is state.selected_unit),
+        )
 
 
 def draw_player_view(
@@ -202,29 +274,92 @@ def draw_player_view(
     offset_x: int,
     offset_y: int,
 ) -> None:
-    """Draw a player's limited view centered on their base."""
-    base_pos = state.get_base_pos(team)
+    """Draw a player's view of the map at their selected tick."""
+    view_t = state.view_tick[team]
+    report_log = state.report_logs[team]
 
-    # Background
     bg_rect = pygame.Rect(offset_x, offset_y, MAP_PIXEL_SIZE, MAP_PIXEL_SIZE)
-    pygame.draw.rect(surface, (30, 30, 30), bg_rect)
+    pygame.draw.rect(surface, (20, 20, 20), bg_rect)
 
     draw_grid(surface, offset_x, offset_y)
 
-    # Base
-    draw_base(surface, base_pos, team, offset_x, offset_y)
+    # Get what was visible at this tick
+    visible_tiles, seen_units = report_log.get_visible_at_tick(view_t)
 
-    # Units visible from this base
-    for unit in state.units:
-        if unit.pos.manhattan_distance(base_pos) <= VISIBILITY_RADIUS:
-            draw_unit(surface, unit, offset_x, offset_y, selected=(unit is state.selected_unit))
+    # Draw visible tiles as slightly lighter
+    for tile in visible_tiles:
+        rect = pygame.Rect(
+            offset_x + tile.x * TILE_SIZE,
+            offset_y + tile.y * TILE_SIZE,
+            TILE_SIZE,
+            TILE_SIZE,
+        )
+        pygame.draw.rect(surface, (40, 40, 40), rect)
 
-    # Fog of war
-    draw_visibility_mask(surface, base_pos, offset_x, offset_y)
+    # Redraw grid on top
+    draw_grid(surface, offset_x, offset_y)
+
+    # Draw bases (always visible conceptually)
+    draw_base(surface, state.get_base_pos(Team.RED), Team.RED, offset_x, offset_y)
+    draw_base(surface, state.get_base_pos(Team.BLUE), Team.BLUE, offset_x, offset_y)
+
+    # Draw units that were seen at this tick
+    for unit_team, unit_pos in seen_units:
+        # Check if this position was actually visible
+        if unit_pos in visible_tiles:
+            draw_unit_at(surface, unit_team, unit_pos, offset_x, offset_y)
+
+
+def draw_slider(
+    surface: pygame.Surface,
+    x: int,
+    y: int,
+    width: int,
+    max_tick: int,
+    current_tick: int,
+    team: Team,
+    is_live: bool,
+    font: pygame.font.Font,
+) -> tuple[pygame.Rect, pygame.Rect]:
+    """Draw a time slider and LIVE button. Return (slider_rect, live_button_rect)."""
+    height = 20
+    slider_rect = pygame.Rect(x, y, width, height)
+
+    # Background
+    pygame.draw.rect(surface, (60, 60, 60), slider_rect)
+    pygame.draw.rect(surface, (100, 100, 100), slider_rect, 1)
+
+    # Filled portion
+    if max_tick > 0:
+        fill_width = int((current_tick / max_tick) * width)
+        fill_color = (150, 80, 80) if team == Team.RED else (80, 80, 150)
+        fill_rect = pygame.Rect(x, y, fill_width, height)
+        pygame.draw.rect(surface, fill_color, fill_rect)
+
+    # Handle
+    if max_tick > 0:
+        handle_x = x + int((current_tick / max_tick) * width)
+    else:
+        handle_x = x
+    pygame.draw.line(surface, (255, 255, 255), (handle_x, y), (handle_x, y + height), 2)
+
+    # Label
+    label = font.render(f"t={current_tick}", True, (200, 200, 200))
+    surface.blit(label, (x + width + 5, y + 2))
+
+    # LIVE button
+    live_btn_x = x + width + 50
+    live_btn_rect = pygame.Rect(live_btn_x, y, 35, height)
+    btn_color = (50, 150, 50) if is_live else (80, 80, 80)
+    pygame.draw.rect(surface, btn_color, live_btn_rect)
+    pygame.draw.rect(surface, (150, 150, 150), live_btn_rect, 1)
+    live_label = font.render("LIVE", True, (255, 255, 255) if is_live else (150, 150, 150))
+    surface.blit(live_label, (live_btn_x + 4, y + 4))
+
+    return slider_rect, live_btn_rect
 
 
 def screen_to_grid(mouse_x: int, mouse_y: int, offset_x: int, offset_y: int) -> Pos | None:
-    """Convert screen coordinates to grid position."""
     rel_x = mouse_x - offset_x
     rel_y = mouse_y - offset_y
 
@@ -233,11 +368,12 @@ def screen_to_grid(mouse_x: int, mouse_y: int, offset_x: int, offset_y: int) -> 
     return None
 
 
-def find_unit_at(state: GameState, pos: Pos, team: Team | None = None) -> Unit | None:
-    """Find a unit at the given position, optionally filtering by team."""
+def find_unit_at_base(state: GameState, pos: Pos, team: Team) -> Unit | None:
+    """Find a unit of the given team at pos, only if near their base."""
+    base_pos = state.get_base_pos(team)
     for unit in state.units:
-        if unit.pos == pos:
-            if team is None or unit.team == team:
+        if unit.team == team and unit.pos == pos:
+            if unit.pos.manhattan_distance(base_pos) <= VISIBILITY_RADIUS:
                 return unit
     return None
 
@@ -245,28 +381,35 @@ def find_unit_at(state: GameState, pos: Pos, team: Team | None = None) -> Unit |
 def main() -> None:
     pygame.init()
 
-    # Layout: RED view | GOD view | BLUE view
+    # Layout: RED view (with slider) | GOD view | BLUE view (with slider)
     padding = 10
     label_height = 25
+    slider_height = 30
     window_width = MAP_PIXEL_SIZE * 3 + padding * 4
-    window_height = MAP_PIXEL_SIZE + padding * 2 + label_height
+    window_height = MAP_PIXEL_SIZE + padding * 2 + label_height + slider_height
 
     screen = pygame.display.set_mode((window_width, window_height))
     pygame.display.set_caption("Ant RTS")
 
-    font = pygame.font.Font(None, 24)
+    font = pygame.font.Font(None, 20)
 
     clock = pygame.time.Clock()
     state = GameState()
 
-    # View offsets
     red_offset_x = padding
     god_offset_x = padding * 2 + MAP_PIXEL_SIZE
     blue_offset_x = padding * 3 + MAP_PIXEL_SIZE * 2
     views_offset_y = padding + label_height
 
-    tick_interval = 200  # ms between game ticks
+    tick_interval = 200
     last_tick = pygame.time.get_ticks()
+
+    # Slider and button rects (will be set during render)
+    red_slider_rect = pygame.Rect(0, 0, 0, 0)
+    blue_slider_rect = pygame.Rect(0, 0, 0, 0)
+    red_live_rect = pygame.Rect(0, 0, 0, 0)
+    blue_live_rect = pygame.Rect(0, 0, 0, 0)
+    dragging_slider: Team | None = None
 
     running = True
     while running:
@@ -275,49 +418,79 @@ def main() -> None:
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
+
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 mx, my = event.pos
 
-                # Check RED view for unit selection
-                grid_pos = screen_to_grid(mx, my, red_offset_x, views_offset_y)
-                if grid_pos is not None:
-                    red_base = state.get_base_pos(Team.RED)
-                    if grid_pos.manhattan_distance(red_base) <= VISIBILITY_RADIUS:
-                        unit = find_unit_at(state, grid_pos, Team.RED)
+                # Check LIVE buttons
+                if red_live_rect.collidepoint(mx, my):
+                    state.view_live[Team.RED] = True
+                    state.view_tick[Team.RED] = state.tick
+                elif blue_live_rect.collidepoint(mx, my):
+                    state.view_live[Team.BLUE] = True
+                    state.view_tick[Team.BLUE] = state.tick
+                # Check sliders
+                elif red_slider_rect.collidepoint(mx, my):
+                    dragging_slider = Team.RED
+                    state.view_live[Team.RED] = False
+                elif blue_slider_rect.collidepoint(mx, my):
+                    dragging_slider = Team.BLUE
+                    state.view_live[Team.BLUE] = False
+                else:
+                    # Check RED player view for unit selection (only at current time)
+                    grid_pos = screen_to_grid(mx, my, red_offset_x, views_offset_y)
+                    if grid_pos is not None and state.view_tick[Team.RED] == state.tick:
+                        unit = find_unit_at_base(state, grid_pos, Team.RED)
                         if unit is not None:
                             state.selected_unit = unit
 
-                # Check BLUE view for unit selection
-                grid_pos = screen_to_grid(mx, my, blue_offset_x, views_offset_y)
-                if grid_pos is not None:
-                    blue_base = state.get_base_pos(Team.BLUE)
-                    if grid_pos.manhattan_distance(blue_base) <= VISIBILITY_RADIUS:
-                        unit = find_unit_at(state, grid_pos, Team.BLUE)
+                    # Check BLUE player view for unit selection (only at current time)
+                    grid_pos = screen_to_grid(mx, my, blue_offset_x, views_offset_y)
+                    if grid_pos is not None and state.view_tick[Team.BLUE] == state.tick:
+                        unit = find_unit_at_base(state, grid_pos, Team.BLUE)
                         if unit is not None:
                             state.selected_unit = unit
 
-                # Check GOD view for target selection
-                grid_pos = screen_to_grid(mx, my, god_offset_x, views_offset_y)
-                if grid_pos is not None and state.selected_unit is not None:
-                    # Issue MOVE order
-                    state.selected_unit.order = MoveOrder(
-                        target=grid_pos,
-                        then_return_home=True,
-                    )
-                    state.selected_unit = None
+                    # Check GOD view for target selection
+                    grid_pos = screen_to_grid(mx, my, god_offset_x, views_offset_y)
+                    if grid_pos is not None and state.selected_unit is not None:
+                        state.selected_unit.order = MoveOrder(
+                            target=grid_pos,
+                            then_return_home=True,
+                        )
+                        state.selected_unit = None
+
+            elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
+                dragging_slider = None
+
+            elif event.type == pygame.MOUSEMOTION and dragging_slider is not None:
+                mx, my = event.pos
+                if dragging_slider == Team.RED:
+                    rel_x = mx - red_slider_rect.x
+                    pct = max(0, min(1, rel_x / red_slider_rect.width))
+                    state.view_tick[Team.RED] = int(pct * state.tick)
+                else:
+                    rel_x = mx - blue_slider_rect.x
+                    pct = max(0, min(1, rel_x / blue_slider_rect.width))
+                    state.view_tick[Team.BLUE] = int(pct * state.tick)
 
         # Game tick
         if current_time - last_tick >= tick_interval:
             tick_game(state)
             last_tick = current_time
+            # Auto-advance sliders only if in live mode
+            if state.view_live[Team.RED]:
+                state.view_tick[Team.RED] = state.tick
+            if state.view_live[Team.BLUE]:
+                state.view_tick[Team.BLUE] = state.tick
 
         # Render
         screen.fill((0, 0, 0))
 
         # Labels
-        red_label = font.render("RED BASE VIEW", True, (255, 100, 100))
+        red_label = font.render("RED'S MAP", True, (255, 100, 100))
         god_label = font.render("GOD'S EYE VIEW", True, (200, 200, 200))
-        blue_label = font.render("BLUE BASE VIEW", True, (100, 100, 255))
+        blue_label = font.render("BLUE'S MAP", True, (100, 100, 255))
 
         screen.blit(red_label, (red_offset_x, padding))
         screen.blit(god_label, (god_offset_x, padding))
@@ -328,11 +501,29 @@ def main() -> None:
         draw_god_view(screen, state, god_offset_x, views_offset_y)
         draw_player_view(screen, state, Team.BLUE, blue_offset_x, views_offset_y)
 
+        # Sliders
+        slider_y = views_offset_y + MAP_PIXEL_SIZE + 5
+        slider_width = MAP_PIXEL_SIZE - 100
+
+        red_slider_rect, red_live_rect = draw_slider(
+            screen, red_offset_x, slider_y, slider_width,
+            state.tick, state.view_tick[Team.RED], Team.RED,
+            state.view_live[Team.RED], font,
+        )
+        blue_slider_rect, blue_live_rect = draw_slider(
+            screen, blue_offset_x, slider_y, slider_width,
+            state.tick, state.view_tick[Team.BLUE], Team.BLUE,
+            state.view_live[Team.BLUE], font,
+        )
+
         # Selection indicator
         if state.selected_unit is not None:
             team_name = state.selected_unit.team.value
-            sel_text = font.render(f"Selected: {team_name} unit - click GOD view to set destination", True, (255, 255, 0))
-            screen.blit(sel_text, (window_width // 2 - sel_text.get_width() // 2, window_height - 20))
+            sel_text = font.render(
+                f"Selected: {team_name} unit - click GOD view to set destination",
+                True, (255, 255, 0),
+            )
+            screen.blit(sel_text, (god_offset_x, slider_y))
 
         pygame.display.flip()
         clock.tick(60)
