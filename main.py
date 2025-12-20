@@ -12,6 +12,8 @@ MAP_PIXEL_SIZE = GRID_SIZE * TILE_SIZE
 
 VISIBILITY_RADIUS = 8
 
+Timestamp = int
+
 
 class Team(Enum):
     RED = "RED"
@@ -33,13 +35,26 @@ class MoveOrder:
     then_return_home: bool = False
 
 
-# A snapshot of what a unit observed at a specific tick
-@dataclass
-class Observation:
-    tick: int
-    observer_pos: Pos
-    # All unit positions visible from observer_pos at that tick
-    visible_units: list[tuple[Team, Pos]]
+# What can be observed at a cell
+@dataclass(frozen=True)
+class Empty:
+    pass
+
+
+@dataclass(frozen=True)
+class UnitPresent:
+    team: Team
+
+
+@dataclass(frozen=True)
+class BasePresent:
+    team: Team
+
+
+CellContents = Empty | UnitPresent | BasePresent
+
+# A logbook maps timestamps to observations (position -> contents)
+Logbook = dict[Timestamp, dict[Pos, CellContents]]
 
 
 @dataclass
@@ -47,10 +62,9 @@ class Unit:
     team: Team
     pos: Pos
     order: MoveOrder | None = None
-    # Observations accumulated while away from base, not yet reported
-    pending_observations: list[Observation] = field(default_factory=list)
-    # Whether unit was near base last tick (to detect "returning home")
-    was_near_base: bool = True
+    # Observations since last sync with home base
+    logbook: Logbook = field(default_factory=dict)
+    last_sync_tick: Timestamp = 0
 
     def home_base(self) -> Pos:
         if self.team == Team.RED:
@@ -62,49 +76,15 @@ class Unit:
         return self.pos.manhattan_distance(self.home_base()) <= VISIBILITY_RADIUS
 
 
-# The report log stores, for each tick, what positions were visible and what units were seen
-@dataclass
-class ReportLog:
-    # tick -> set of visible positions at that tick
-    visible_tiles: dict[int, set[Pos]] = field(default_factory=dict)
-    # tick -> list of (team, pos) for units seen at that tick
-    seen_units: dict[int, list[tuple[Team, Pos]]] = field(default_factory=dict)
-
-    def merge_observation(self, obs: Observation) -> None:
-        """Merge an observation into the report log."""
-        tick = obs.tick
-        if tick not in self.visible_tiles:
-            self.visible_tiles[tick] = set()
-        if tick not in self.seen_units:
-            self.seen_units[tick] = []
-
-        # Add all tiles visible from observer position
-        for dx in range(-VISIBILITY_RADIUS, VISIBILITY_RADIUS + 1):
-            for dy in range(-VISIBILITY_RADIUS, VISIBILITY_RADIUS + 1):
-                if abs(dx) + abs(dy) <= VISIBILITY_RADIUS:
-                    tile = Pos(obs.observer_pos.x + dx, obs.observer_pos.y + dy)
-                    if 0 <= tile.x < GRID_SIZE and 0 <= tile.y < GRID_SIZE:
-                        self.visible_tiles[tick].add(tile)
-
-        # Add seen units
-        self.seen_units[tick].extend(obs.visible_units)
-
-    def get_visible_at_tick(self, tick: int) -> tuple[set[Pos], list[tuple[Team, Pos]]]:
-        """Get visibility info for a specific tick."""
-        tiles = self.visible_tiles.get(tick, set())
-        units = self.seen_units.get(tick, [])
-        return tiles, units
-
-
 @dataclass
 class GameState:
-    tick: int = 0
+    tick: Timestamp = 0
     units: list[Unit] = field(default_factory=list)
     selected_unit: Unit | None = None
-    # Each team's report log
-    report_logs: dict[Team, ReportLog] = field(default_factory=dict)
+    # Each team's home base logbook
+    base_logbooks: dict[Team, Logbook] = field(default_factory=dict)
     # Slider positions for each team's view (which tick they're viewing)
-    view_tick: dict[Team, int] = field(default_factory=dict)
+    view_tick: dict[Team, Timestamp] = field(default_factory=dict)
     # Whether each player's view auto-advances to current tick
     view_live: dict[Team, bool] = field(default_factory=dict)
 
@@ -116,15 +96,15 @@ class GameState:
             self.units.append(Unit(Team.RED, Pos(red_base.x, red_base.y - 1 + i)))
             self.units.append(Unit(Team.BLUE, Pos(blue_base.x, blue_base.y - 1 + i)))
 
-        self.report_logs[Team.RED] = ReportLog()
-        self.report_logs[Team.BLUE] = ReportLog()
+        self.base_logbooks[Team.RED] = {}
+        self.base_logbooks[Team.BLUE] = {}
         self.view_tick[Team.RED] = 0
         self.view_tick[Team.BLUE] = 0
         self.view_live[Team.RED] = True
         self.view_live[Team.BLUE] = True
 
-        # Record initial observations (units start at base)
-        self._record_all_near_base_observations()
+        # Record initial observations
+        self._record_observations_for_units_at_base()
 
     def get_base_pos(self, team: Team) -> Pos:
         if team == Team.RED:
@@ -132,38 +112,66 @@ class GameState:
         else:
             return Pos(GRID_SIZE - 3, GRID_SIZE // 2)
 
-    def _record_all_near_base_observations(self) -> None:
-        """Record observations from all units currently near their base."""
+    def _record_observations_for_units_at_base(self) -> None:
+        """Record observations for all units currently near their base, and sync to base logbook."""
         for unit in self.units:
             if unit.is_near_base():
-                visible_units: list[tuple[Team, Pos]] = []
-                for other in self.units:
-                    if other.pos.manhattan_distance(unit.pos) <= VISIBILITY_RADIUS:
-                        visible_units.append((other.team, other.pos))
-                obs = Observation(
-                    tick=self.tick,
-                    observer_pos=unit.pos,
-                    visible_units=visible_units,
-                )
-                self.report_logs[unit.team].merge_observation(obs)
+                observations = self._observe_from_position(unit.pos)
+                unit.logbook[self.tick] = observations
+                # Immediately sync to base
+                self._merge_logbook_to_base(unit)
+
+    def _observe_from_position(self, observer_pos: Pos) -> dict[Pos, CellContents]:
+        """Return what can be observed from a given position."""
+        observations: dict[Pos, CellContents] = {}
+
+        # Check all positions within visibility radius
+        for dx in range(-VISIBILITY_RADIUS, VISIBILITY_RADIUS + 1):
+            for dy in range(-VISIBILITY_RADIUS, VISIBILITY_RADIUS + 1):
+                if abs(dx) + abs(dy) <= VISIBILITY_RADIUS:
+                    pos = Pos(observer_pos.x + dx, observer_pos.y + dy)
+                    if 0 <= pos.x < GRID_SIZE and 0 <= pos.y < GRID_SIZE:
+                        # Check what's at this position
+                        contents = self._get_contents_at(pos)
+                        observations[pos] = contents
+
+        return observations
+
+    def _get_contents_at(self, pos: Pos) -> CellContents:
+        """Determine what's actually at a position right now."""
+        # Check for bases
+        if pos == self.get_base_pos(Team.RED):
+            return BasePresent(Team.RED)
+        if pos == self.get_base_pos(Team.BLUE):
+            return BasePresent(Team.BLUE)
+
+        # Check for units
+        for unit in self.units:
+            if unit.pos == pos:
+                return UnitPresent(unit.team)
+
+        return Empty()
+
+    def _merge_logbook_to_base(self, unit: Unit) -> None:
+        """Merge a unit's logbook into the team's base logbook."""
+        base_logbook = self.base_logbooks[unit.team]
+        for timestamp, observations in unit.logbook.items():
+            if timestamp not in base_logbook:
+                base_logbook[timestamp] = {}
+            # Merge observations for this timestamp
+            base_logbook[timestamp].update(observations)
+
+        # Clear unit's logbook and update sync time
+        unit.logbook.clear()
+        unit.last_sync_tick = self.tick
 
 
 def tick_game(state: GameState) -> None:
     """Advance the game by one tick."""
-    # First, record observations for all units
+    # Record observations for all units
     for unit in state.units:
-        # What can this unit see right now?
-        visible_units: list[tuple[Team, Pos]] = []
-        for other in state.units:
-            if other.pos.manhattan_distance(unit.pos) <= VISIBILITY_RADIUS:
-                visible_units.append((other.team, other.pos))
-
-        obs = Observation(
-            tick=state.tick,
-            observer_pos=unit.pos,
-            visible_units=visible_units,
-        )
-        unit.pending_observations.append(obs)
+        observations = state._observe_from_position(unit.pos)
+        unit.logbook[state.tick] = observations
 
     # Move units
     for unit in state.units:
@@ -185,20 +193,15 @@ def tick_game(state: GameState) -> None:
             else:
                 unit.order = None
 
-    # Check for units at base - they immediately report observations
+    # Sync units that are at base
     for unit in state.units:
-        near_base_now = unit.is_near_base()
-        if near_base_now:
-            # Unit is at base - merge all pending observations immediately
-            for obs in unit.pending_observations:
-                state.report_logs[unit.team].merge_observation(obs)
-            unit.pending_observations.clear()
-        unit.was_near_base = near_base_now
+        if unit.is_near_base():
+            state._merge_logbook_to_base(unit)
 
     state.tick += 1
 
-    # Record observations from all units currently at base (for the new tick)
-    state._record_all_near_base_observations()
+    # Record observations for units currently at base (for the new tick)
+    state._record_observations_for_units_at_base()
 
 
 # --- Rendering ---
@@ -276,38 +279,36 @@ def draw_player_view(
 ) -> None:
     """Draw a player's view of the map at their selected tick."""
     view_t = state.view_tick[team]
-    report_log = state.report_logs[team]
+    logbook = state.base_logbooks[team]
 
     bg_rect = pygame.Rect(offset_x, offset_y, MAP_PIXEL_SIZE, MAP_PIXEL_SIZE)
     pygame.draw.rect(surface, (20, 20, 20), bg_rect)
 
     draw_grid(surface, offset_x, offset_y)
 
-    # Get what was visible at this tick
-    visible_tiles, seen_units = report_log.get_visible_at_tick(view_t)
+    # Get observations for this timestamp
+    if view_t in logbook:
+        observations = logbook[view_t]
 
-    # Draw visible tiles as slightly lighter
-    for tile in visible_tiles:
-        rect = pygame.Rect(
-            offset_x + tile.x * TILE_SIZE,
-            offset_y + tile.y * TILE_SIZE,
-            TILE_SIZE,
-            TILE_SIZE,
-        )
-        pygame.draw.rect(surface, (40, 40, 40), rect)
+        # Draw visible tiles as slightly lighter
+        for pos in observations.keys():
+            rect = pygame.Rect(
+                offset_x + pos.x * TILE_SIZE,
+                offset_y + pos.y * TILE_SIZE,
+                TILE_SIZE,
+                TILE_SIZE,
+            )
+            pygame.draw.rect(surface, (40, 40, 40), rect)
 
-    # Redraw grid on top
-    draw_grid(surface, offset_x, offset_y)
+        # Redraw grid on top
+        draw_grid(surface, offset_x, offset_y)
 
-    # Draw bases (always visible conceptually)
-    draw_base(surface, state.get_base_pos(Team.RED), Team.RED, offset_x, offset_y)
-    draw_base(surface, state.get_base_pos(Team.BLUE), Team.BLUE, offset_x, offset_y)
-
-    # Draw units that were seen at this tick
-    for unit_team, unit_pos in seen_units:
-        # Check if this position was actually visible
-        if unit_pos in visible_tiles:
-            draw_unit_at(surface, unit_team, unit_pos, offset_x, offset_y)
+        # Draw observed contents
+        for pos, contents in observations.items():
+            if isinstance(contents, BasePresent):
+                draw_base(surface, pos, contents.team, offset_x, offset_y)
+            elif isinstance(contents, UnitPresent):
+                draw_unit_at(surface, contents.team, pos, offset_x, offset_y)
 
 
 def draw_slider(
