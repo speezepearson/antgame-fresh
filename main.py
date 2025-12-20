@@ -437,28 +437,37 @@ def main() -> None:
                     dragging_slider = Team.BLUE
                     state.view_live[Team.BLUE] = False
                 else:
-                    # Check RED player view for unit selection (only at current time)
+                    # Check RED player view for unit selection or target
                     grid_pos = screen_to_grid(mx, my, red_offset_x, views_offset_y)
                     if grid_pos is not None and state.view_tick[Team.RED] == state.tick:
-                        unit = find_unit_at_base(state, grid_pos, Team.RED)
-                        if unit is not None:
-                            state.selected_unit = unit
+                        if state.selected_unit is not None and state.selected_unit.team == Team.RED:
+                            # Issue move order
+                            state.selected_unit.order = MoveOrder(
+                                target=grid_pos,
+                                then_return_home=True,
+                            )
+                            state.selected_unit = None
+                        else:
+                            # Try to select a unit
+                            unit = find_unit_at_base(state, grid_pos, Team.RED)
+                            if unit is not None:
+                                state.selected_unit = unit
 
-                    # Check BLUE player view for unit selection (only at current time)
+                    # Check BLUE player view for unit selection or target
                     grid_pos = screen_to_grid(mx, my, blue_offset_x, views_offset_y)
                     if grid_pos is not None and state.view_tick[Team.BLUE] == state.tick:
-                        unit = find_unit_at_base(state, grid_pos, Team.BLUE)
-                        if unit is not None:
-                            state.selected_unit = unit
-
-                    # Check GOD view for target selection
-                    grid_pos = screen_to_grid(mx, my, god_offset_x, views_offset_y)
-                    if grid_pos is not None and state.selected_unit is not None:
-                        state.selected_unit.order = MoveOrder(
-                            target=grid_pos,
-                            then_return_home=True,
-                        )
-                        state.selected_unit = None
+                        if state.selected_unit is not None and state.selected_unit.team == Team.BLUE:
+                            # Issue move order
+                            state.selected_unit.order = MoveOrder(
+                                target=grid_pos,
+                                then_return_home=True,
+                            )
+                            state.selected_unit = None
+                        else:
+                            # Try to select a unit
+                            unit = find_unit_at_base(state, grid_pos, Team.BLUE)
+                            if unit is not None:
+                                state.selected_unit = unit
 
             elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
                 dragging_slider = None
@@ -520,7 +529,7 @@ def main() -> None:
         if state.selected_unit is not None:
             team_name = state.selected_unit.team.value
             sel_text = font.render(
-                f"Selected: {team_name} unit - click GOD view to set destination",
+                f"Selected: {team_name} unit - click {team_name}'s map to set destination",
                 True, (255, 255, 0),
             )
             screen.blit(sel_text, (god_offset_x, slider_y))
