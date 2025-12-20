@@ -3,8 +3,8 @@
 from __future__ import annotations
 import pygame
 
-from core import Pos, BaseRegion
-from game import GameState, Team, BasePresent, UnitPresent, GRID_SIZE, MoveOrder
+from core import Pos, Region
+from mechanics import GameState, Team, BasePresent, UnitPresent, GRID_SIZE, MoveOrder, tick_game
 
 
 # Rendering Constants
@@ -27,7 +27,7 @@ def draw_grid(surface: pygame.Surface, offset_x: int, offset_y: int) -> None:
         )
 
 
-def draw_base(surface: pygame.Surface, region: BaseRegion, team: Team, offset_x: int, offset_y: int) -> None:
+def draw_base(surface: pygame.Surface, region: Region, team: Team, offset_x: int, offset_y: int) -> None:
     """Draw a base region with a faint background tint."""
     # Faint background color for base cells
     tint_color = (80, 40, 40) if team == Team.RED else (40, 40, 80)
@@ -303,7 +303,6 @@ def main() -> None:
 
         # Game tick
         if current_time - last_tick >= tick_interval:
-            from game import tick_game
             tick_game(state)
             last_tick = current_time
             # Auto-advance sliders only if in live mode

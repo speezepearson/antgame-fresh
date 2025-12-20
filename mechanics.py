@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 
-from core import Timestamp, Pos, BaseRegion
+from core import Timestamp, Pos, Region
 
 
 # Game Constants
@@ -45,7 +45,7 @@ CellContents = Empty | UnitPresent | BasePresent
 Logbook = dict[Timestamp, dict[Pos, list[CellContents]]]
 
 
-def get_base_region(team: Team) -> BaseRegion:
+def get_base_region(team: Team) -> Region:
     """Get the base region for a team."""
     if team == Team.RED:
         center = Pos(2, GRID_SIZE // 2)
@@ -58,7 +58,7 @@ def get_base_region(team: Team) -> BaseRegion:
         for x in range(center.x - 2, center.x + 3)
         for y in range(center.y - 2, center.y + 3)
     )
-    return BaseRegion(cells)
+    return Region(cells)
 
 
 @dataclass
@@ -71,7 +71,7 @@ class Unit:
     logbook: Logbook = field(default_factory=dict)
     last_sync_tick: Timestamp = 0
 
-    def home_base_region(self) -> BaseRegion:
+    def home_base_region(self) -> Region:
         """Get this unit's home base region."""
         return get_base_region(self.team)
 
@@ -123,7 +123,7 @@ class GameState:
         # Record initial observations from base regions
         self._record_observations_from_bases()
 
-    def get_base_region(self, team: Team) -> BaseRegion:
+    def get_base_region(self, team: Team) -> Region:
         """Get a team's base region."""
         return get_base_region(team)
 

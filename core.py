@@ -17,8 +17,8 @@ class Pos:
 
 
 @dataclass(frozen=True)
-class BaseRegion:
-    """Represents a base region as a set of positions."""
+class Region:
+    """A set of positions."""
     cells: frozenset[Pos]
 
     def contains(self, pos: Pos) -> bool:
@@ -26,10 +26,10 @@ class BaseRegion:
         return pos in self.cells
 
     def get_edge_cells(self) -> list[Pos]:
-        """Return perimeter cells (cells with at least one non-base neighbor)."""
+        """Return perimeter cells (cells with at least one neighbor outside the region)."""
         edge_cells = []
         for cell in self.cells:
-            # Check if any orthogonal neighbor is outside the base
+            # Check if any orthogonal neighbor is outside the region
             neighbors = [
                 Pos(cell.x + 1, cell.y),
                 Pos(cell.x - 1, cell.y),
@@ -39,7 +39,3 @@ class BaseRegion:
             if any(neighbor not in self.cells for neighbor in neighbors):
                 edge_cells.append(cell)
         return edge_cells
-
-    def get_all_cells(self) -> list[Pos]:
-        """Return all cells in the region."""
-        return list(self.cells)
