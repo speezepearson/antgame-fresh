@@ -1,8 +1,10 @@
 """Game mechanics and state."""
 
 from __future__ import annotations
+from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import Protocol
 
 from core import Timestamp, Pos, Region
 
@@ -45,6 +47,120 @@ CellContents = Empty | UnitPresent | BasePresent
 Logbook = dict[Timestamp, dict[Pos, list[CellContents]]]
 
 
+# ===== Plan-Based Order System =====
+
+
+class Order(ABC):
+    """Base class for all orders that units can execute."""
+
+    @abstractmethod
+    def is_complete(self, unit: "Unit") -> bool:
+        """Check if this order has been completed."""
+        pass
+
+    @abstractmethod
+    def execute_step(self, unit: "Unit", state: "GameState") -> None:
+        """Execute one step of this order."""
+        pass
+
+
+@dataclass
+class Move(Order):
+    """Move to a target position."""
+
+    target: Pos
+
+    def is_complete(self, unit: "Unit") -> bool:
+        return unit.pos == self.target
+
+    def execute_step(self, unit: "Unit", state: "GameState") -> None:
+        """Move one step toward the target."""
+        if self.is_complete(unit):
+            return
+
+        dx = 0 if self.target.x == unit.pos.x else (1 if self.target.x > unit.pos.x else -1)
+        dy = 0 if self.target.y == unit.pos.y else (1 if self.target.y > unit.pos.y else -1)
+
+        if dx != 0:
+            unit.pos = Pos(unit.pos.x + dx, unit.pos.y)
+        elif dy != 0:
+            unit.pos = Pos(unit.pos.x, unit.pos.y + dy)
+
+
+class Condition(Protocol):
+    """Protocol for conditions that can trigger interrupts."""
+
+    def evaluate(self, unit: "Unit", observations: dict[Pos, list[CellContents]]) -> bool:
+        """Evaluate if this condition is true."""
+        ...
+
+
+@dataclass(frozen=True)
+class EnemyInRangeCondition:
+    """Condition: enemy unit is within a certain distance."""
+
+    distance: int
+
+    def evaluate(self, unit: "Unit", observations: dict[Pos, list[CellContents]]) -> bool:
+        for pos, contents_list in observations.items():
+            for contents in contents_list:
+                if isinstance(contents, UnitPresent) and contents.team != unit.team:
+                    if unit.pos.manhattan_distance(pos) <= self.distance:
+                        return True
+        return False
+
+
+@dataclass(frozen=True)
+class BaseVisibleCondition:
+    """Condition: home base is visible."""
+
+    def evaluate(self, unit: "Unit", observations: dict[Pos, list[CellContents]]) -> bool:
+        for pos, contents_list in observations.items():
+            for contents in contents_list:
+                if isinstance(contents, BasePresent) and contents.team == unit.team:
+                    return True
+        return False
+
+
+@dataclass(frozen=True)
+class PositionReachedCondition:
+    """Condition: unit has reached a specific position."""
+
+    position: Pos
+
+    def evaluate(self, unit: "Unit", observations: dict[Pos, list[CellContents]]) -> bool:
+        return unit.pos == self.position
+
+
+@dataclass
+class Interrupt:
+    """An interrupt handler that can preempt a plan when a condition is met."""
+
+    condition: Condition
+    action: list[Order]
+
+
+@dataclass
+class Plan:
+    """A plan consisting of a queue of orders and interrupt handlers."""
+
+    orders: list[Order] = field(default_factory=list)
+    interrupts: list[Interrupt] = field(default_factory=list)
+
+    def current_order(self) -> Order | None:
+        """Get the current order (first in queue)."""
+        return self.orders[0] if self.orders else None
+
+    def complete_current_order(self) -> None:
+        """Remove the current order from the queue."""
+        if self.orders:
+            self.orders.pop(0)
+
+    def interrupt_with(self, action: list[Order]) -> None:
+        """Replace the order queue with interrupt actions."""
+        self.orders = list(action)
+
+
 def get_base_region(team: Team) -> Region:
     """Get the base region for a team."""
     if team == Team.RED:
@@ -66,7 +182,7 @@ class Unit:
     team: Team
     pos: Pos
     original_pos: Pos  # Where the unit spawned (for returning home)
-    order: MoveOrder | None = None
+    plan: Plan = field(default_factory=Plan)
     # Observations since last sync with home base
     logbook: Logbook = field(default_factory=dict)
     last_sync_tick: Timestamp = 0
@@ -203,32 +319,37 @@ class GameState:
 
 def tick_game(state: GameState) -> None:
     """Advance the game by one tick."""
-    # Record observations for all units
+    # 1. Record observations for all units
     for unit in state.units:
         observations = state._observe_from_position(unit.pos)
         unit.logbook[state.tick] = observations
 
-    # Move units
+    # 2. Check interrupts for each unit
     for unit in state.units:
-        if unit.order is None:
+        # Get current observations for this unit
+        observations = state._observe_from_position(unit.pos)
+
+        # Check each interrupt condition
+        for interrupt in unit.plan.interrupts:
+            if interrupt.condition.evaluate(unit, observations):
+                # First matching interrupt triggers: replace order queue
+                unit.plan.interrupt_with(interrupt.action)
+                break  # Only first matching interrupt per tick
+
+    # 3. Execute current order for each unit
+    for unit in state.units:
+        current_order = unit.plan.current_order()
+        if current_order is None:
             continue
 
-        target = unit.order.target
-        dx = 0 if target.x == unit.pos.x else (1 if target.x > unit.pos.x else -1)
-        dy = 0 if target.y == unit.pos.y else (1 if target.y > unit.pos.y else -1)
+        # Execute one step of the order
+        current_order.execute_step(unit, state)
 
-        if dx != 0:
-            unit.pos = Pos(unit.pos.x + dx, unit.pos.y)
-        elif dy != 0:
-            unit.pos = Pos(unit.pos.x, unit.pos.y + dy)
+        # If order is complete, remove it from queue
+        if current_order.is_complete(unit):
+            unit.plan.complete_current_order()
 
-        if unit.pos == target:
-            if unit.order.then_return_home:
-                unit.order = MoveOrder(target=unit.home_pos(), then_return_home=False)
-            else:
-                unit.order = None
-
-    # Sync units that are at base
+    # 4. Sync units that are at base
     for unit in state.units:
         if unit.is_near_base():
             state._merge_logbook_to_base(unit)

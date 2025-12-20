@@ -4,12 +4,61 @@ from __future__ import annotations
 import pygame
 
 from core import Pos, Region
-from mechanics import GameState, Team, BasePresent, UnitPresent, GRID_SIZE, MoveOrder, tick_game
+from mechanics import (
+    GameState, Team, BasePresent, UnitPresent, GRID_SIZE, Move, Plan, tick_game,
+    Unit, Order, Condition, Interrupt,
+    EnemyInRangeCondition, BaseVisibleCondition, PositionReachedCondition,
+)
 
 
 # Rendering Constants
 TILE_SIZE = 16
 MAP_PIXEL_SIZE = GRID_SIZE * TILE_SIZE
+
+
+# Plan display helpers
+def _describe_condition(condition: Condition) -> str:
+    """Convert a condition to a human-readable string."""
+    if isinstance(condition, EnemyInRangeCondition):
+        return f"enemy within {condition.distance}"
+    elif isinstance(condition, BaseVisibleCondition):
+        return "base visible"
+    elif isinstance(condition, PositionReachedCondition):
+        return f"reached ({condition.position.x}, {condition.position.y})"
+    else:
+        return "unknown condition"
+
+
+def _describe_order(order: Order) -> str:
+    """Convert an order to a human-readable string."""
+    if isinstance(order, Move):
+        return f"Move to ({order.target.x}, {order.target.y})"
+    else:
+        return "Unknown order"
+
+
+def format_plan(plan: Plan, unit: Unit) -> list[str]:
+    """Format a plan as a list of strings for display."""
+    lines = []
+
+    # Show current and remaining orders
+    if plan.orders:
+        lines.append("Orders:")
+        for i, order in enumerate(plan.orders):
+            prefix = "> " if i == 0 else "  "
+            lines.append(f"{prefix}{_describe_order(order)}")
+    else:
+        lines.append("Orders: (none)")
+
+    # Show interrupts
+    if plan.interrupts:
+        lines.append("Interrupts:")
+        for interrupt in plan.interrupts:
+            condition_desc = _describe_condition(interrupt.condition)
+            action_desc = ", ".join(_describe_order(order) for order in interrupt.action)
+            lines.append(f"  If {condition_desc}: {action_desc}")
+
+    return lines
 
 
 def draw_grid(surface: pygame.Surface, offset_x: int, offset_y: int) -> None:
@@ -259,10 +308,20 @@ def main() -> None:
                     grid_pos = screen_to_grid(mx, my, red_offset_x, views_offset_y)
                     if grid_pos is not None and state.view_tick[Team.RED] == state.tick:
                         if state.selected_unit is not None and state.selected_unit.team == Team.RED:
-                            # Issue move order
-                            state.selected_unit.order = MoveOrder(
-                                target=grid_pos,
-                                then_return_home=True,
+                            # Issue move order: create plan with move to target, then return home
+                            state.selected_unit.plan = Plan(
+                                orders=[
+                                    Move(target=grid_pos),
+                                    Move(target=state.selected_unit.home_pos()),
+                                ],
+                                interrupts=[
+                                    Interrupt(
+                                        condition=EnemyInRangeCondition(distance=3),
+                                        action=[
+                                            Move(target=state.selected_unit.home_pos()),
+                                        ],
+                                    ),
+                                ],
                             )
                             state.selected_unit = None
                         else:
@@ -275,10 +334,13 @@ def main() -> None:
                     grid_pos = screen_to_grid(mx, my, blue_offset_x, views_offset_y)
                     if grid_pos is not None and state.view_tick[Team.BLUE] == state.tick:
                         if state.selected_unit is not None and state.selected_unit.team == Team.BLUE:
-                            # Issue move order
-                            state.selected_unit.order = MoveOrder(
-                                target=grid_pos,
-                                then_return_home=True,
+                            # Issue move order: create plan with move to target, then return home
+                            state.selected_unit.plan = Plan(
+                                orders=[
+                                    Move(target=grid_pos),
+                                    Move(target=state.selected_unit.home_pos()),
+                                ],
+                                interrupts=[],
                             )
                             state.selected_unit = None
                         else:
@@ -343,7 +405,7 @@ def main() -> None:
             state.view_live[Team.BLUE], font,
         )
 
-        # Selection indicator
+        # Selection indicator and plan display
         if state.selected_unit is not None:
             team_name = state.selected_unit.team.value
             sel_text = font.render(
@@ -351,6 +413,14 @@ def main() -> None:
                 True, (255, 255, 0),
             )
             screen.blit(sel_text, (god_offset_x, slider_y))
+
+            # Display the unit's plan below the selection indicator
+            plan_lines = format_plan(state.selected_unit.plan, state.selected_unit)
+            y_offset = slider_y + 25  # Start below the selection text
+            for line in plan_lines:
+                plan_text = font.render(line, True, (200, 200, 200))
+                screen.blit(plan_text, (god_offset_x, y_offset))
+                y_offset += 20  # Line spacing
 
         pygame.display.flip()
         clock.tick(60)
