@@ -29,6 +29,35 @@ class Pos:
         return abs(self.x - other.x) + abs(self.y - other.y)
 
 
+@dataclass(frozen=True)
+class BaseRegion:
+    """Represents a base region as a set of positions."""
+    cells: frozenset[Pos]
+
+    def contains(self, pos: Pos) -> bool:
+        """Check if position is inside the region."""
+        return pos in self.cells
+
+    def get_edge_cells(self) -> list[Pos]:
+        """Return perimeter cells (cells with at least one non-base neighbor)."""
+        edge_cells = []
+        for cell in self.cells:
+            # Check if any orthogonal neighbor is outside the base
+            neighbors = [
+                Pos(cell.x + 1, cell.y),
+                Pos(cell.x - 1, cell.y),
+                Pos(cell.x, cell.y + 1),
+                Pos(cell.x, cell.y - 1),
+            ]
+            if any(neighbor not in self.cells for neighbor in neighbors):
+                edge_cells.append(cell)
+        return edge_cells
+
+    def get_all_cells(self) -> list[Pos]:
+        """Return all cells in the region."""
+        return list(self.cells)
+
+
 @dataclass
 class MoveOrder:
     target: Pos
@@ -53,27 +82,47 @@ class BasePresent:
 
 CellContents = Empty | UnitPresent | BasePresent
 
-# A logbook maps timestamps to observations (position -> contents)
-Logbook = dict[Timestamp, dict[Pos, CellContents]]
+# A logbook maps timestamps to observations (position -> list of contents)
+Logbook = dict[Timestamp, dict[Pos, list[CellContents]]]
+
+
+def get_base_region(team: Team) -> BaseRegion:
+    """Get the base region for a team."""
+    if team == Team.RED:
+        center = Pos(2, GRID_SIZE // 2)
+    else:
+        center = Pos(GRID_SIZE - 3, GRID_SIZE // 2)
+
+    # Create a 5x5 square centered on the position
+    cells = frozenset(
+        Pos(x, y)
+        for x in range(center.x - 2, center.x + 3)
+        for y in range(center.y - 2, center.y + 3)
+    )
+    return BaseRegion(cells)
 
 
 @dataclass
 class Unit:
     team: Team
     pos: Pos
+    original_pos: Pos  # Where the unit spawned (for returning home)
     order: MoveOrder | None = None
     # Observations since last sync with home base
     logbook: Logbook = field(default_factory=dict)
     last_sync_tick: Timestamp = 0
 
-    def home_base(self) -> Pos:
-        if self.team == Team.RED:
-            return Pos(2, GRID_SIZE // 2)
-        else:
-            return Pos(GRID_SIZE - 3, GRID_SIZE // 2)
+    def home_base_region(self) -> BaseRegion:
+        """Get this unit's home base region."""
+        return get_base_region(self.team)
+
+    def home_pos(self) -> Pos:
+        """Get this unit's original spawn position (for returning home)."""
+        return self.original_pos
 
     def is_near_base(self) -> bool:
-        return self.pos.manhattan_distance(self.home_base()) <= VISIBILITY_RADIUS
+        """Check if unit is inside its home base region."""
+        return self.home_base_region().contains(self.pos)
 
 
 @dataclass
@@ -89,12 +138,21 @@ class GameState:
     view_live: dict[Team, bool] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        red_base = Pos(2, GRID_SIZE // 2)
-        blue_base = Pos(GRID_SIZE - 3, GRID_SIZE // 2)
+        red_region = get_base_region(Team.RED)
+        blue_region = get_base_region(Team.BLUE)
 
+        # Get center positions from regions for spawning
+        red_cells = list(red_region.cells)
+        blue_cells = list(blue_region.cells)
+        red_center = Pos(2, GRID_SIZE // 2)
+        blue_center = Pos(GRID_SIZE - 3, GRID_SIZE // 2)
+
+        # Spawn 3 units inside each base
         for i in range(3):
-            self.units.append(Unit(Team.RED, Pos(red_base.x, red_base.y - 1 + i)))
-            self.units.append(Unit(Team.BLUE, Pos(blue_base.x, blue_base.y - 1 + i)))
+            red_spawn = Pos(red_center.x, red_center.y - 1 + i)
+            blue_spawn = Pos(blue_center.x, blue_center.y - 1 + i)
+            self.units.append(Unit(Team.RED, red_spawn, red_spawn))
+            self.units.append(Unit(Team.BLUE, blue_spawn, blue_spawn))
 
         self.base_logbooks[Team.RED] = {}
         self.base_logbooks[Team.BLUE] = {}
@@ -103,27 +161,30 @@ class GameState:
         self.view_live[Team.RED] = True
         self.view_live[Team.BLUE] = True
 
-        # Record initial observations
-        self._record_observations_for_units_at_base()
+        # Record initial observations from base regions
+        self._record_observations_from_bases()
+
+    def get_base_region(self, team: Team) -> BaseRegion:
+        """Get a team's base region."""
+        return get_base_region(team)
 
     def get_base_pos(self, team: Team) -> Pos:
-        if team == Team.RED:
-            return Pos(2, GRID_SIZE // 2)
-        else:
-            return Pos(GRID_SIZE - 3, GRID_SIZE // 2)
+        """Get a position in the team's base (deprecated, for backward compatibility)."""
+        # Return an arbitrary cell from the region
+        return next(iter(self.get_base_region(team).cells))
 
-    def _record_observations_for_units_at_base(self) -> None:
-        """Record observations for all units currently near their base, and sync to base logbook."""
-        for unit in self.units:
-            if unit.is_near_base():
-                observations = self._observe_from_position(unit.pos)
-                unit.logbook[self.tick] = observations
-                # Immediately sync to base
-                self._merge_logbook_to_base(unit)
+    def _record_observations_from_bases(self) -> None:
+        """Record observations from each base region's edge cells."""
+        for team in [Team.RED, Team.BLUE]:
+            observations = self._observe_from_base_region(team)
+            if observations:
+                if self.tick not in self.base_logbooks[team]:
+                    self.base_logbooks[team][self.tick] = {}
+                self.base_logbooks[team][self.tick].update(observations)
 
-    def _observe_from_position(self, observer_pos: Pos) -> dict[Pos, CellContents]:
+    def _observe_from_position(self, observer_pos: Pos) -> dict[Pos, list[CellContents]]:
         """Return what can be observed from a given position."""
-        observations: dict[Pos, CellContents] = {}
+        observations: dict[Pos, list[CellContents]] = {}
 
         # Check all positions within visibility radius
         for dx in range(-VISIBILITY_RADIUS, VISIBILITY_RADIUS + 1):
@@ -137,20 +198,35 @@ class GameState:
 
         return observations
 
-    def _get_contents_at(self, pos: Pos) -> CellContents:
+    def _observe_from_base_region(self, team: Team) -> dict[Pos, list[CellContents]]:
+        """Observe from all edge cells of a base region, return union."""
+        region = self.get_base_region(team)
+        all_observations: dict[Pos, list[CellContents]] = {}
+        for edge_pos in region.get_edge_cells():
+            observations = self._observe_from_position(edge_pos)
+            all_observations.update(observations)
+        return all_observations
+
+    def _get_contents_at(self, pos: Pos) -> list[CellContents]:
         """Determine what's actually at a position right now."""
-        # Check for bases
-        if pos == self.get_base_pos(Team.RED):
-            return BasePresent(Team.RED)
-        if pos == self.get_base_pos(Team.BLUE):
-            return BasePresent(Team.BLUE)
+        contents: list[CellContents] = []
 
         # Check for units
         for unit in self.units:
             if unit.pos == pos:
-                return UnitPresent(unit.team)
+                contents.append(UnitPresent(unit.team))
 
-        return Empty()
+        # Check for bases (any cell in the region)
+        if self.get_base_region(Team.RED).contains(pos):
+            contents.append(BasePresent(Team.RED))
+        if self.get_base_region(Team.BLUE).contains(pos):
+            contents.append(BasePresent(Team.BLUE))
+
+        # If nothing found, return empty
+        if not contents:
+            contents.append(Empty())
+
+        return contents
 
     def _merge_logbook_to_base(self, unit: Unit) -> None:
         """Merge a unit's logbook into the team's base logbook."""
@@ -189,7 +265,7 @@ def tick_game(state: GameState) -> None:
 
         if unit.pos == target:
             if unit.order.then_return_home:
-                unit.order = MoveOrder(target=unit.home_base(), then_return_home=False)
+                unit.order = MoveOrder(target=unit.home_pos(), then_return_home=False)
             else:
                 unit.order = None
 
@@ -200,8 +276,8 @@ def tick_game(state: GameState) -> None:
 
     state.tick += 1
 
-    # Record observations for units currently at base (for the new tick)
-    state._record_observations_for_units_at_base()
+    # Record observations from base regions for the new tick
+    state._record_observations_from_bases()
 
 
 # --- Rendering ---
@@ -221,15 +297,18 @@ def draw_grid(surface: pygame.Surface, offset_x: int, offset_y: int) -> None:
         )
 
 
-def draw_base(surface: pygame.Surface, pos: Pos, team: Team, offset_x: int, offset_y: int) -> None:
-    color = (200, 50, 50) if team == Team.RED else (50, 50, 200)
-    rect = pygame.Rect(
-        offset_x + pos.x * TILE_SIZE + 2,
-        offset_y + pos.y * TILE_SIZE + 2,
-        TILE_SIZE - 4,
-        TILE_SIZE - 4,
-    )
-    pygame.draw.rect(surface, color, rect, 3)
+def draw_base(surface: pygame.Surface, region: BaseRegion, team: Team, offset_x: int, offset_y: int) -> None:
+    """Draw a base region with a faint background tint."""
+    # Faint background color for base cells
+    tint_color = (80, 40, 40) if team == Team.RED else (40, 40, 80)
+    for pos in region.cells:
+        rect = pygame.Rect(
+            offset_x + pos.x * TILE_SIZE,
+            offset_y + pos.y * TILE_SIZE,
+            TILE_SIZE,
+            TILE_SIZE,
+        )
+        pygame.draw.rect(surface, tint_color, rect)
 
 
 def draw_unit_at(
@@ -260,8 +339,8 @@ def draw_god_view(
     pygame.draw.rect(surface, (30, 30, 30), bg_rect)
 
     draw_grid(surface, offset_x, offset_y)
-    draw_base(surface, state.get_base_pos(Team.RED), Team.RED, offset_x, offset_y)
-    draw_base(surface, state.get_base_pos(Team.BLUE), Team.BLUE, offset_x, offset_y)
+    draw_base(surface, state.get_base_region(Team.RED), Team.RED, offset_x, offset_y)
+    draw_base(surface, state.get_base_region(Team.BLUE), Team.BLUE, offset_x, offset_y)
 
     for unit in state.units:
         draw_unit_at(
@@ -303,12 +382,20 @@ def draw_player_view(
         # Redraw grid on top
         draw_grid(surface, offset_x, offset_y)
 
-        # Draw observed contents
-        for pos, contents in observations.items():
-            if isinstance(contents, BasePresent):
-                draw_base(surface, pos, contents.team, offset_x, offset_y)
-            elif isinstance(contents, UnitPresent):
-                draw_unit_at(surface, contents.team, pos, offset_x, offset_y)
+        # Draw observed contents (bases first, then units on top)
+        drawn_bases = set()
+        # First pass: draw bases
+        for pos, contents_list in observations.items():
+            for contents in contents_list:
+                if isinstance(contents, BasePresent):
+                    if contents.team not in drawn_bases:
+                        draw_base(surface, state.get_base_region(contents.team), contents.team, offset_x, offset_y)
+                        drawn_bases.add(contents.team)
+        # Second pass: draw units on top
+        for pos, contents_list in observations.items():
+            for contents in contents_list:
+                if isinstance(contents, UnitPresent):
+                    draw_unit_at(surface, contents.team, pos, offset_x, offset_y)
 
 
 def draw_slider(
@@ -370,11 +457,11 @@ def screen_to_grid(mouse_x: int, mouse_y: int, offset_x: int, offset_y: int) -> 
 
 
 def find_unit_at_base(state: GameState, pos: Pos, team: Team) -> Unit | None:
-    """Find a unit of the given team at pos, only if near their base."""
-    base_pos = state.get_base_pos(team)
+    """Find a unit of the given team at pos, only if inside their base region."""
+    base_region = state.get_base_region(team)
     for unit in state.units:
         if unit.team == team and unit.pos == pos:
-            if unit.pos.manhattan_distance(base_pos) <= VISIBILITY_RADIUS:
+            if base_region.contains(unit.pos):
                 return unit
     return None
 
