@@ -303,51 +303,49 @@ def main() -> None:
                 elif blue_slider_rect.collidepoint(mx, my):
                     dragging_slider = Team.BLUE
                     state.view_live[Team.BLUE] = False
+                # Check Issue Plan button
+                elif issue_plan_rect is not None and issue_plan_rect.collidepoint(mx, my):
+                    if state.working_plan is not None and state.working_plan.orders and state.selected_unit is not None:
+                        # Assign working plan to selected unit
+                        state.selected_unit.plan = state.working_plan
+                        state.selected_unit = None
+                        state.working_plan = None
+                # Check Clear button
+                elif clear_plan_rect is not None and clear_plan_rect.collidepoint(mx, my):
+                    # Reset working plan
+                    state.working_plan = Plan()
                 else:
                     # Check RED player view for unit selection or target
                     grid_pos = screen_to_grid(mx, my, red_offset_x, views_offset_y)
                     if grid_pos is not None and state.view_tick[Team.RED] == state.tick:
                         if state.selected_unit is not None and state.selected_unit.team == Team.RED:
-                            # Issue move order: create plan with move to target, then return home
-                            state.selected_unit.plan = Plan(
-                                orders=[
-                                    Move(target=grid_pos),
-                                    Move(target=state.selected_unit.home_pos()),
-                                ],
-                                interrupts=[
-                                    Interrupt(
-                                        condition=EnemyInRangeCondition(distance=3),
-                                        action=[
-                                            Move(target=state.selected_unit.home_pos()),
-                                        ],
-                                    ),
-                                ],
-                            )
-                            state.selected_unit = None
+                            # Append Move order to working plan
+                            if state.working_plan is None:
+                                state.working_plan = Plan()
+                            state.working_plan.orders.append(Move(target=grid_pos))
                         else:
                             # Try to select a unit
                             unit = find_unit_at_base(state, grid_pos, Team.RED)
                             if unit is not None:
                                 state.selected_unit = unit
+                                # Initialize working plan when selecting a unit
+                                state.working_plan = Plan()
 
                     # Check BLUE player view for unit selection or target
                     grid_pos = screen_to_grid(mx, my, blue_offset_x, views_offset_y)
                     if grid_pos is not None and state.view_tick[Team.BLUE] == state.tick:
                         if state.selected_unit is not None and state.selected_unit.team == Team.BLUE:
-                            # Issue move order: create plan with move to target, then return home
-                            state.selected_unit.plan = Plan(
-                                orders=[
-                                    Move(target=grid_pos),
-                                    Move(target=state.selected_unit.home_pos()),
-                                ],
-                                interrupts=[],
-                            )
-                            state.selected_unit = None
+                            # Append Move order to working plan
+                            if state.working_plan is None:
+                                state.working_plan = Plan()
+                            state.working_plan.orders.append(Move(target=grid_pos))
                         else:
                             # Try to select a unit
                             unit = find_unit_at_base(state, grid_pos, Team.BLUE)
                             if unit is not None:
                                 state.selected_unit = unit
+                                # Initialize working plan when selecting a unit
+                                state.working_plan = Plan()
 
             elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
                 dragging_slider = None
@@ -406,21 +404,43 @@ def main() -> None:
         )
 
         # Selection indicator and plan display
+        issue_plan_rect: pygame.Rect | None = None
+        clear_plan_rect: pygame.Rect | None = None
         if state.selected_unit is not None:
             team_name = state.selected_unit.team.value
             sel_text = font.render(
-                f"Selected: {team_name} unit - click {team_name}'s map to set destination",
+                f"Selected: {team_name} unit - click {team_name}'s map to add waypoints",
                 True, (255, 255, 0),
             )
             screen.blit(sel_text, (god_offset_x, slider_y))
 
-            # Display the unit's plan below the selection indicator
-            plan_lines = format_plan(state.selected_unit.plan, state.selected_unit)
-            y_offset = slider_y + 25  # Start below the selection text
-            for line in plan_lines:
-                plan_text = font.render(line, True, (200, 200, 200))
-                screen.blit(plan_text, (god_offset_x, y_offset))
-                y_offset += 20  # Line spacing
+            # Draw "Issue Plan" and "Clear" buttons
+            btn_y = slider_y
+            btn_height = 20
+
+            # Issue Plan button
+            issue_plan_rect = pygame.Rect(god_offset_x + 500, btn_y, 80, btn_height)
+            btn_color = (50, 150, 50) if state.working_plan and state.working_plan.orders else (80, 80, 80)
+            pygame.draw.rect(screen, btn_color, issue_plan_rect)
+            pygame.draw.rect(screen, (150, 150, 150), issue_plan_rect, 1)
+            issue_text = font.render("Issue Plan", True, (255, 255, 255))
+            screen.blit(issue_text, (issue_plan_rect.x + 5, issue_plan_rect.y + 4))
+
+            # Clear button
+            clear_plan_rect = pygame.Rect(god_offset_x + 590, btn_y, 50, btn_height)
+            pygame.draw.rect(screen, (150, 50, 50), clear_plan_rect)
+            pygame.draw.rect(screen, (150, 150, 150), clear_plan_rect, 1)
+            clear_text = font.render("Clear", True, (255, 255, 255))
+            screen.blit(clear_text, (clear_plan_rect.x + 8, clear_plan_rect.y + 4))
+
+            # Display the working plan below the selection indicator
+            if state.working_plan is not None:
+                plan_lines = format_plan(state.working_plan, state.selected_unit)
+                y_offset = slider_y + 25  # Start below the selection text
+                for line in plan_lines:
+                    plan_text = font.render(line, True, (200, 200, 200))
+                    screen.blit(plan_text, (god_offset_x, y_offset))
+                    y_offset += 20  # Line spacing
 
         pygame.display.flip()
         clock.tick(60)

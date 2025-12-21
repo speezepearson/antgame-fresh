@@ -1,0 +1,1 @@
+Always use `uv` to run Python commands.

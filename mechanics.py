@@ -205,6 +205,8 @@ class GameState:
     tick: Timestamp = 0
     units: list[Unit] = field(default_factory=list)
     selected_unit: Unit | None = None
+    # Plan being constructed for the selected unit
+    working_plan: Plan | None = None
     # Each team's home base logbook
     base_logbooks: dict[Team, Logbook] = field(default_factory=dict)
     # Slider positions for each team's view (which tick they're viewing)
