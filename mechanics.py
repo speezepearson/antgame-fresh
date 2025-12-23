@@ -296,7 +296,7 @@ class GameState:
 
             # Add observations from units currently in the base
             for unit in self.units:
-                if unit.team == team and unit.is_near_base():
+                if unit.team == team and unit.is_near_base(self):
                     unit_observations = self._observe_from_position(unit.pos, unit.visibility_radius)
                     observations.update(unit_observations)
 
