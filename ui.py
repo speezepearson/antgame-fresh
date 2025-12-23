@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import Any
 import argparse
 import pygame
+import pygame_gui
 
 from core import Pos, Region
 from mechanics import (
@@ -355,7 +356,13 @@ def main() -> None:
 
     font = pygame.font.Font(None, 20)
 
+    # Initialize pygame_gui manager
+    ui_manager = pygame_gui.UIManager((window_width, window_height))
+
     clock = pygame.time.Clock()
+
+    # Plan text box (will be created when needed)
+    plan_text_box: pygame_gui.elements.UITextBox | None = None
 
     red_offset_x = padding
     god_offset_x = padding * 2 + map_pixel_size
@@ -375,8 +382,12 @@ def main() -> None:
     running = True
     while running:
         current_time = pygame.time.get_ticks()
+        time_delta = clock.tick(60) / 1000.0
 
         for event in pygame.event.get():
+            # Process pygame_gui events
+            ui_manager.process_events(event)
+
             if event.type == pygame.QUIT:
                 running = False
 
@@ -512,21 +523,32 @@ def main() -> None:
             )
             screen.blit(sel_text, (god_offset_x, slider_y))
 
-            # Display the working plan below the player's slider
+            # Display the working plan in a scrollable text box
             plan_y = slider_y + 30  # Start below the slider
+            plan_box_height = 90  # Fixed height for scrollable area
+            btn_y = plan_y + plan_box_height + 5  # Position buttons below the text box
+
             if state.working_plan is not None:
                 plan_lines = format_plan(state.working_plan, state.selected_unit)
-                y_offset = plan_y
-                for line in plan_lines:
-                    plan_text = font.render(line, True, (200, 200, 200))
-                    screen.blit(plan_text, (plan_offset_x, y_offset))
-                    y_offset += 20  # Line spacing
+                plan_html = "<br>".join(plan_lines)
 
-                # Position buttons below the plan
-                btn_y = y_offset + 5
-            else:
-                # No plan, position buttons below slider
-                btn_y = plan_y
+                # Create or update the plan text box
+                text_box_rect = pygame.Rect(plan_offset_x, plan_y, map_pixel_size, plan_box_height)
+                if plan_text_box is None or plan_text_box.relative_rect != text_box_rect:
+                    if plan_text_box is not None:
+                        plan_text_box.kill()
+                    plan_text_box = pygame_gui.elements.UITextBox(
+                        html_text=plan_html,
+                        relative_rect=text_box_rect,
+                        manager=ui_manager,
+                    )
+                else:
+                    plan_text_box.html_text = plan_html
+                    plan_text_box.rebuild()
+            elif plan_text_box is not None:
+                # No plan, remove the text box
+                plan_text_box.kill()
+                plan_text_box = None
 
             # Draw "Issue Plan" and "Clear" buttons below the plan
             btn_height = 20
@@ -545,9 +567,18 @@ def main() -> None:
             pygame.draw.rect(screen, (150, 150, 150), clear_plan_rect, 1)
             clear_text = font.render("Clear", True, (255, 255, 255))
             screen.blit(clear_text, (clear_plan_rect.x + 8, clear_plan_rect.y + 4))
+        elif plan_text_box is not None:
+            # No selected unit, remove the text box
+            plan_text_box.kill()
+            plan_text_box = None
+
+        # Update UI manager
+        ui_manager.update(time_delta)
+
+        # Draw UI manager
+        ui_manager.draw_ui(screen)
 
         pygame.display.flip()
-        clock.tick(60)
 
     pygame.quit()
 
