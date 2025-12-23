@@ -449,11 +449,20 @@ def main() -> None:
         default=5000,
         help="Port for server mode (default: 5000)",
     )
+    parser.add_argument(
+        "--headless",
+        action="store_true",
+        help="Run server without UI (server mode only)",
+    )
     args = parser.parse_args()
 
     # Validate client mode requirements
     if args.mode == "client" and args.team is None:
         parser.error("--team is required in client mode")
+
+    # Validate headless mode requirements
+    if args.headless and args.mode != "server":
+        parser.error("--headless can only be used with --mode server")
 
     mode: GameMode = args.mode
 
@@ -461,13 +470,16 @@ def main() -> None:
         random.seed(args.seed)
         numpy.random.seed(args.seed)
 
-    pygame.init()
+    # Only initialize pygame if not in headless mode
+    if not args.headless:
+        pygame.init()
 
     # Initialize game state and client based on mode
     state: GameState | None = None
     client: GameClient
     client_team: Team | None = None
     flask_server = None
+    tick_interval = 200  # Game tick interval in milliseconds
 
     if mode in ["local", "server"]:
         # Create game state locally
@@ -487,18 +499,51 @@ def main() -> None:
             Team.BLUE: blue_view,
         }
 
+        # Initialize knowledge with observations at tick 0
+        for view in views.values():
+            view.knowledge.tick_knowledge(state)
+
         # Create local client
         client = LocalGameClient(state, {Team.RED: red_view.knowledge, Team.BLUE: blue_view.knowledge})
 
         # Start Flask server in server mode
         if mode == "server":
             flask_app = create_server(state, {Team.RED: red_view.knowledge, Team.BLUE: blue_view.knowledge}, port=args.port)
-            flask_thread = threading.Thread(
-                target=lambda: flask_app.run(host="0.0.0.0", port=args.port, debug=False, use_reloader=False),
-                daemon=True,
-            )
-            flask_thread.start()
-            print(f"Server started on port {args.port}")
+
+            if args.headless:
+                # Headless mode: run server in foreground and game loop in background
+                print(f"Starting headless server on port {args.port}")
+
+                # Start game tick thread
+                import time as time_module
+
+                def game_loop() -> None:
+                    last_tick = time_module.time()
+                    tick_interval_sec = tick_interval / 1000.0  # Convert ms to seconds
+
+                    while True:
+                        current_time = time_module.time()
+                        if current_time - last_tick >= tick_interval_sec:
+                            tick_game(state)  # type: ignore
+                            for view in views.values():
+                                view.knowledge.tick_knowledge(state)  # type: ignore
+                            last_tick = current_time
+                        time_module.sleep(0.01)  # Sleep 10ms to avoid busy waiting
+
+                game_thread = threading.Thread(target=game_loop, daemon=True)
+                game_thread.start()
+
+                # Run Flask server in foreground (blocking)
+                flask_app.run(host="0.0.0.0", port=args.port, debug=False, use_reloader=False)
+                return  # Exit after Flask server stops
+            else:
+                # Normal server mode: run Flask in background, show UI
+                flask_thread = threading.Thread(
+                    target=lambda: flask_app.run(host="0.0.0.0", port=args.port, debug=False, use_reloader=False),
+                    daemon=True,
+                )
+                flask_thread.start()
+                print(f"Server started on port {args.port}")
 
     else:  # client mode
         client_team = Team(args.team)
@@ -662,7 +707,6 @@ def main() -> None:
     clear_plan_btn: pygame_gui.elements.UIButton | None = None
     plan_buttons_team: Team | None = None  # Track which team the buttons are for
 
-    tick_interval = 200
     last_tick = pygame.time.get_ticks()
     last_knowledge_poll = pygame.time.get_ticks()
 
