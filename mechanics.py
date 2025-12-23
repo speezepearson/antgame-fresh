@@ -251,9 +251,17 @@ class GameState:
         return next(iter(self.get_base_region(team).cells))
 
     def _record_observations_from_bases(self) -> None:
-        """Record observations from each base region's edge cells."""
+        """Record observations from each base region and units in the base."""
         for team in [Team.RED, Team.BLUE]:
+            # Start with base region observations
             observations = self._observe_from_base_region(team)
+
+            # Add observations from units currently in the base
+            for unit in self.units:
+                if unit.team == team and unit.is_near_base():
+                    unit_observations = self._observe_from_position(unit.pos, unit.visibility_radius)
+                    observations.update(unit_observations)
+
             if observations:
                 if self.tick not in self.base_logbooks[team]:
                     self.base_logbooks[team][self.tick] = {}
