@@ -87,7 +87,7 @@ class Move(Order):
             unit.pos = Pos(unit.pos.x, unit.pos.y + dy)
 
 
-T = TypeVar('T')
+T = TypeVar('T', covariant=True)
 
 
 class Condition(Protocol[T]):
