@@ -577,7 +577,7 @@ def main() -> None:
             # Handle pygame_gui button clicks
             elif event.type == pygame_gui.UI_BUTTON_PRESSED:
                 # Handle plan control buttons
-                for team in [Team.RED, Team.BLUE]:
+                for team in Team:
                     view = views[team]
                     if event.ui_element == view.tick_controls.live_btn:
                         view.freeze_frame = None
@@ -624,7 +624,7 @@ def main() -> None:
                     continue
 
                 # Check each team's player view for unit selection or target
-                for team in [Team.RED, Team.BLUE]:
+                for team in Team:
                     grid_pos = screen_to_grid(
                         mx,
                         my,
@@ -699,7 +699,7 @@ def main() -> None:
         selection_label_y = slider_y
 
         # Handle plan controls for each team
-        for team in [Team.RED, Team.BLUE]:
+        for team in Team:
             view = views[team]
             plan_offset_x = team_offsets[team]
 

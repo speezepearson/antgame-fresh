@@ -631,7 +631,7 @@ def tick_game(state: GameState) -> None:
     state.kill_units(*units_to_remove)
 
     # 3.75. Process food at bases to spawn new units
-    for team in [Team.RED, Team.BLUE]:
+    for team in Team:
         base_region = state.get_base_region(team)
         unoccupied_cells = [
             cell
