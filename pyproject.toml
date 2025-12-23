@@ -6,7 +6,6 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "pygame>=2.6.1",
-    "noise>=1.2.2",
     "numpy>=2.4.0",
     "pygame-gui>=0.6.14",
 ]
@@ -15,6 +14,7 @@ dependencies = [
 dev = [
     "pytest>=9.0.2",
     "mypy>=1.13.0",
+    "ipython>=9.8.0",
 ]
 
 [tool.mypy]

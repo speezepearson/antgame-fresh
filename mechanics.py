@@ -7,9 +7,9 @@ from enum import Enum
 from typing import Protocol, TypeVar, Generic, Callable, Any
 import random
 import numpy as np
-import noise  # type: ignore
 
 from core import Timestamp, Pos, Region
+from perlin import perlin
 
 
 # Game Constants
@@ -20,10 +20,7 @@ GRID_SIZE = 32
 class FoodConfig:
     """Configuration for Perlin noise-based food generation."""
     scale: float = 10.0
-    octaves: int = 3
-    persistence: float = 0.5
-    lacunarity: float = 2.0
-    max_prob: float = 0.1
+    max_prob: float = 0.0
     seed: int | None = None
 
 
@@ -54,7 +51,12 @@ class BasePresent:
     team: Team
 
 
-CellContents = Empty | UnitPresent | BasePresent
+@dataclass(frozen=True)
+class FoodPresent:
+    count: int
+
+
+CellContents = Empty | UnitPresent | BasePresent | FoodPresent
 
 # A logbook maps timestamps to observations (position -> list of contents)
 Logbook = dict[Timestamp, dict[Pos, list[CellContents]]]
@@ -91,6 +93,13 @@ class Move(Order):
         if self.is_complete(unit):
             return
 
+        # Check if there's food at current position before moving
+        old_pos = unit.pos
+        food_count = state.food.get(old_pos, 0)
+        if food_count > 0:
+            # Remove food from current position
+            del state.food[old_pos]
+
         dx = 0 if self.target.x == unit.pos.x else (1 if self.target.x > unit.pos.x else -1)
         dy = 0 if self.target.y == unit.pos.y else (1 if self.target.y > unit.pos.y else -1)
 
@@ -98,6 +107,10 @@ class Move(Order):
             unit.pos = Pos(unit.pos.x + dx, unit.pos.y)
         elif dy != 0:
             unit.pos = Pos(unit.pos.x, unit.pos.y + dy)
+
+        # If we picked up food, place it at new position
+        if food_count > 0:
+            state.food[unit.pos] = state.food.get(unit.pos, 0) + food_count
 
 
 # TODO: I'm rusty on contra/covariance, but I worry that this is wrong.
@@ -162,6 +175,28 @@ class PositionReachedCondition:
         if unit.pos == self.position:
             return self.position
         return None
+
+
+@dataclass(frozen=True)
+class FoodInRange:
+    """Condition: food is visible within range.
+
+    Returns the position of the nearest food found, or None if no food is visible.
+    """
+
+    def evaluate(self, unit: "Unit", observations: dict[Pos, list[CellContents]]) -> Pos | None:
+        nearest_food_pos: Pos | None = None
+        nearest_distance: int | None = None
+
+        for pos, contents_list in observations.items():
+            for contents in contents_list:
+                if isinstance(contents, FoodPresent):
+                    distance = unit.pos.manhattan_distance(pos)
+                    if nearest_distance is None or distance < nearest_distance:
+                        nearest_distance = distance
+                        nearest_food_pos = pos
+
+        return nearest_food_pos
 
 
 @dataclass
@@ -279,43 +314,25 @@ def _generate_food(config: FoodConfig, grid_width: int = GRID_SIZE, grid_height:
     Returns:
         A dict mapping Pos to food count at that position
     """
-    # Set random seed if provided
-    seed = config.seed if config.seed is not None else random.randint(0, 1000000)
-    if config.seed is not None:
-        np.random.seed(config.seed)
 
-    food_counts: dict[Pos, int] = {}
+    noise = perlin(grid_width, grid_height, seed=config.seed if config.seed is not None else random.randint(0, 1000000))
 
-    for x in range(grid_width):
-        for y in range(grid_height):
-            # Generate Perlin noise value for this position
-            # Normalize coordinates by scale
-            noise_value = noise.pnoise2(
-                x / config.scale,
-                y / config.scale,
-                octaves=config.octaves,
-                persistence=config.persistence,
-                lacunarity=config.lacunarity,
-                repeatx=grid_width * 10,  # Large repeat to avoid tiling
-                repeaty=grid_height * 10,
-                base=seed,
-            )
+    # Perlin noise returns values in range [-1, 1], normalize to [0, 1]
+    normalized_value = (noise + 1) / 2
 
-            # Perlin noise returns values in range [-1, 1], normalize to [0, 1]
-            normalized_value = (noise_value + 1) / 2
+    # Map to mean range [0, max_prob] for Poisson distribution
+    # max_prob now represents the maximum mean for the Poisson distribution
+    poisson_mean = normalized_value * config.max_prob
 
-            # Map to mean range [0, max_prob] for Poisson distribution
-            # max_prob now represents the maximum mean for the Poisson distribution
-            poisson_mean = normalized_value * config.max_prob
+    # Generate food count using Poisson distribution
+    food_counts_grid = np.random.poisson(poisson_mean)
 
-            # Generate food count using Poisson distribution
-            food_count = int(np.random.poisson(poisson_mean))
-
-            # Only store non-zero counts
-            if food_count > 0:
-                food_counts[Pos(x, y)] = food_count
-
-    return food_counts
+    return {
+        Pos(x, y): int(food_counts_grid[x, y])
+        for x in range(grid_width)
+        for y in range(grid_height)
+        if food_counts_grid[x, y] > 0
+    }
 
 
 @dataclass
@@ -467,6 +484,10 @@ class GameState:
         if self.get_base_region(Team.BLUE).contains(pos):
             contents.append(BasePresent(Team.BLUE))
 
+        # Check for food
+        if pos in self.food:
+            contents.append(FoodPresent(count=self.food[pos]))
+
         # If nothing found, return empty
         if not contents:
             contents.append(Empty())
@@ -539,6 +560,32 @@ def tick_game(state: GameState) -> None:
                 units_to_remove.extend(units_at_pos)
 
     state.units = [u for u in state.units if u not in units_to_remove]
+
+    # 3.75. Process food at bases to spawn new units
+    for team in [Team.RED, Team.BLUE]:
+        base_region = state.get_base_region(team)
+
+        # Find food in the base
+        food_positions = [pos for pos in state.food.keys() if base_region.contains(pos)]
+
+        for food_pos in food_positions:
+            # Find unoccupied cells in the base
+            occupied_positions = {unit.pos for unit in state.units}
+            unoccupied_cells = [cell for cell in base_region.cells if cell not in occupied_positions]
+
+            if unoccupied_cells:
+                # Find closest unoccupied cell to the food
+                closest_cell = min(unoccupied_cells, key=lambda cell: food_pos.manhattan_distance(cell))
+
+                # Spawn a new unit at the closest unoccupied cell
+                new_unit = Unit(team=team, pos=closest_cell, original_pos=closest_cell)
+                state.units.append(new_unit)
+
+                # Remove one food item (or all if we want to spawn multiple units per food count)
+                # Based on the requirement "a new unit is created", I'll spawn one unit per food item
+                state.food[food_pos] -= 1
+                if state.food[food_pos] == 0:
+                    del state.food[food_pos]
 
     # 4. Sync units that are at base
     for unit in state.units:
