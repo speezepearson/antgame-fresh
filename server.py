@@ -125,8 +125,8 @@ def serialize_knowledge(knowledge: PlayerKnowledge) -> dict[str, Any]:
             [serialize_cell_contents(c) for c in contents_list],
         ]
 
-    # Serialize units_in_base
-    units_in_base = [serialize_unit(unit) for unit in knowledge.units_in_base]
+    # Serialize own_units_in_base
+    own_units_in_base = [serialize_unit(unit) for unit in knowledge.own_units_in_base]
 
     return {
         "team": knowledge.team.value,
@@ -135,7 +135,7 @@ def serialize_knowledge(knowledge: PlayerKnowledge) -> dict[str, Any]:
         "tick": knowledge.tick,
         "all_observations": all_observations,
         "last_observations": last_observations,
-        "units_in_base": units_in_base,
+        "own_units_in_base": own_units_in_base,
     }
 
 

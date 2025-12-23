@@ -22,13 +22,12 @@ class PlayerKnowledge:
     grid_width: int
     grid_height: int
     tick: Timestamp
-
+    own_units_in_base: list[Unit]
 
     all_observations: ObservationLog = field(default_factory=dict)
     last_seen: dict[UnitId, tuple[Timestamp, Unit]] = field(default_factory=dict)
     expected_trajectories: dict[UnitId, ExpectedTrajectory] = field(default_factory=dict)
     last_observations: LastObservations = field(default_factory=dict)
-    units_in_base: list[Unit] = field(default_factory=list)
 
     def add_raw_observations(self, game: GameState, observations: RawObservations) -> None:
         self.all_observations.setdefault(game.tick, {}).update(observations)
@@ -48,37 +47,12 @@ class PlayerKnowledge:
                 if not (pos in self.last_observations and self.last_observations[pos][0] >= timestamp):
                     self.last_observations[pos] = (timestamp, contents_list)
 
-    def record_observations_from_bases(self, game: GameState) -> None:
-        """Record observations from each base region and units in the base."""
-        observations = self.observe_from_base_region(game)
-
-        # Add observations from units currently in the base
-        # TODO: can we just skip this since we'll immediately siphon their logs anyway?
-        for unit in game.units:
-            if unit.team == self.team and unit.is_in_base(game):
-                unit_observations = game.observe_from_position(
-                    unit.pos, unit.visibility_radius
-                )
-                observations.update(unit_observations)
-
-        self.add_raw_observations(game, observations)
-
-    def observe_from_base_region(self, game: GameState) -> dict[Pos, list[CellContents]]:
-        """Observe only the tiles within the base region itself."""
-        region = game.get_base_region(self.team)
-        observations: dict[Pos, list[CellContents]] = {}
-        for pos in region.cells:
-            contents = game.get_contents_at(pos)
-            observations[pos] = contents
-        return observations
-
-    def siphon_unit_logs(self, game: GameState) -> None:
-        for unit in game.units:
-            if unit.team == self.team and unit.is_in_base(game):
-                self.merge_observation_log(unit.observation_log)
-                # Clear unit's logbook and update sync time
-                unit.observation_log.clear()
-                unit.last_sync_tick = game.tick
+    def siphon_unit_logs(self) -> None:
+        for unit in self.own_units_in_base:
+            self.merge_observation_log(unit.observation_log)
+            # Clear unit's logbook and update sync time
+            unit.observation_log.clear()
+            unit.last_sync_tick = self.tick
 
 
     def get_currently_visible_cells(self) -> set[Pos]:
@@ -87,33 +61,50 @@ class PlayerKnowledge:
         return set(self.all_observations.get(last_tick, {}).keys())
 
 
-    def tick_knowledge(self, state: GameState) -> None:
-        self.siphon_unit_logs(state)
-        self.compute_expected_trajectories(state)
-        self.record_observations_from_bases(state)
-        self.tick = state.tick
+    def tick_knowledge(self, tick: Timestamp, new_units_in_base: list[Unit]) -> None:
+        self.tick = tick
+        self.own_units_in_base = new_units_in_base
+        self.siphon_unit_logs()
+        self.compute_expected_trajectories()
 
-        # Update units_in_base
-        self.units_in_base = [
-            unit for unit in state.units
-            if unit.team == self.team and unit.is_in_base(state)
-        ]
-
-    def compute_expected_trajectories(self, state: GameState) -> None:
-        visible = self.get_currently_visible_cells()
+    def compute_expected_trajectories(self) -> None:
+        currently_visible_unit_ids = {
+            content.unit_id
+            for contents in self.all_observations.get(self.tick, {}).values()
+            for content in contents
+            if isinstance(content, UnitPresent)
+        }
 
         # Compute last known trajectories for units not currently visible
-        for unit in state.units:
-            if unit.team != self.team:
-                continue
-
-            if unit.pos in visible:
-                # Unit is visible - clear any trajectory
+        for tick, unit in self.last_seen.values():
+            if unit.id in currently_visible_unit_ids:
                 self.expected_trajectories.pop(unit.id, None)
             elif unit.id in self.last_seen and unit.id not in self.expected_trajectories:
                 last_seen_tick, last_seen_unit = self.last_seen[unit.id]
-                self.expected_trajectories[unit.id] = compute_expected_trajectory(
-                    last_seen_unit, state, start_tick=last_seen_tick
+
+                sim_state = GameState(
+                    grid_width=self.grid_width,
+                    grid_height=self.grid_height,
+                    base_regions={team: Region(frozenset([Pos(0,0)])) for team in Team}, # TODO: hack
+                    tick=last_seen_tick,
+                    units=[deepcopy(unit)],
+                    food={},  # No food in simulation
+                )
+
+                positions = [unit.pos]
+                sim_unit = sim_state.units[0]
+
+                for _ in range(100):
+                    if not sim_unit.plan.orders:
+                        break
+
+                    tick_game(sim_state)
+                    positions.append(sim_unit.pos)
+
+                self.expected_trajectories[unit.id] = ExpectedTrajectory(
+                    unit_id=unit.id,
+                    start_tick=self.tick,
+                    positions=positions,
                 )
 
 

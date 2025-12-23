@@ -190,8 +190,8 @@ class RemoteGameClient(GameClient):
                     last_contents.append(FoodPresent(c["count"]))
             last_observations[pos] = (tick, last_contents)
 
-        # Deserialize units_in_base
-        units_in_base = [self._deserialize_unit(u) for u in data.get("units_in_base", [])]
+        # Deserialize own_units_in_base
+        own_units_in_base = [self._deserialize_unit(u) for u in data.get("own_units_in_base", [])]
 
         return PlayerKnowledge(
             team=Team(data["team"]),
@@ -200,7 +200,7 @@ class RemoteGameClient(GameClient):
             tick=data["tick"],
             all_observations=all_observations,
             last_observations=last_observations,
-            units_in_base=units_in_base,
+            own_units_in_base=own_units_in_base,
         )
 
     def _deserialize_unit(self, data: dict[str, Any]) -> Any:

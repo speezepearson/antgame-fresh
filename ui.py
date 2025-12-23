@@ -206,6 +206,7 @@ def god_knowledge(game: GameState) -> PlayerKnowledge:
         tick=game.tick,
         all_observations={game.tick: observations},
         last_observations={pos: (game.tick, contents_list) for pos, contents_list in observations.items()},
+        own_units_in_base=[],
     )
 
 def draw_god_view(
@@ -494,12 +495,14 @@ def main() -> None:
             unit.plan.interrupts = make_default_interrupts()
 
         # Initialize knowledge for both teams
-        red_view = PlayerView(knowledge=PlayerKnowledge(team=Team.RED, grid_width=args.width, grid_height=args.height, tick=state.tick))
-        blue_view = PlayerView(knowledge=PlayerKnowledge(team=Team.BLUE, grid_width=args.width, grid_height=args.height, tick=state.tick))
+        red_view = PlayerView(knowledge=PlayerKnowledge(team=Team.RED, grid_width=args.width, grid_height=args.height, tick=state.tick, own_units_in_base=[]))
+        blue_view = PlayerView(knowledge=PlayerKnowledge(team=Team.BLUE, grid_width=args.width, grid_height=args.height, tick=state.tick, own_units_in_base=[]))
         views = {
             Team.RED: red_view,
             Team.BLUE: blue_view,
         }
+        for view in views.values():
+            view.knowledge.tick_knowledge(state.tick, [u for u in state.units if u.team==view.knowledge.team and u.is_in_base(state)])
 
         # Create local client
         client = LocalGameClient(state, {Team.RED: red_view.knowledge, Team.BLUE: blue_view.knowledge})
@@ -523,8 +526,8 @@ def main() -> None:
                         current_time = time_module.time()
                         if current_time - last_tick >= tick_interval_sec:
                             tick_game(state)  # type: ignore
-                            for view in views.values():
-                                view.knowledge.tick_knowledge(state)  # type: ignore
+                            for team, view in views.items():
+                                view.knowledge.tick_knowledge(state.tick, [u for u in state.units if u.team==team and u.is_in_base(state)])  # type: ignore
                             last_tick = current_time
                         time_module.sleep(0.01)  # Sleep 10ms to avoid busy waiting
 
@@ -794,11 +797,11 @@ def main() -> None:
                             view.working_plan.orders.append(Move(target=grid_pos))
                         else:
                             # Try to select a unit
-                            unit = find_unit_at_base_from_knowledge(
+                            unit_ = find_unit_at_base_from_knowledge(
                                 view.knowledge, grid_pos, team, state
                             )
-                            if unit is not None:
-                                view.selected_unit = unit
+                            if unit_ is not None:
+                                view.selected_unit = unit_
                                 view.working_plan = Plan(
                                     interrupts=make_default_interrupts()
                                 )
@@ -825,11 +828,11 @@ def main() -> None:
                             red_view.working_plan.orders.append(Move(target=grid_pos))
                         else:
                             # Try to select a unit
-                            unit = find_unit_at_base_from_knowledge(
+                            unit_ = find_unit_at_base_from_knowledge(
                                 red_view.knowledge, grid_pos, Team.RED, state
                             )
-                            if unit is not None:
-                                red_view.selected_unit = unit
+                            if unit_ is not None:
+                                red_view.selected_unit = unit_
                                 # Initialize working plan when selecting a unit
                                 red_view.working_plan = Plan(
                                     interrupts=make_default_interrupts()
@@ -856,11 +859,11 @@ def main() -> None:
                             blue_view.working_plan.orders.append(Move(target=grid_pos))
                         else:
                             # Try to select a unit
-                            unit = find_unit_at_base_from_knowledge(
+                            unit_ = find_unit_at_base_from_knowledge(
                                 blue_view.knowledge, grid_pos, Team.BLUE, state
                             )
-                            if unit is not None:
-                                blue_view.selected_unit = unit
+                            if unit_ is not None:
+                                blue_view.selected_unit = unit_
                                 # Initialize working plan when selecting a unit
                                 blue_view.working_plan = Plan(
                                     interrupts=make_default_interrupts()
@@ -873,7 +876,7 @@ def main() -> None:
             if current_time - last_tick >= tick_interval:
                 tick_game(state)
                 for view in views.values():
-                    view.knowledge.tick_knowledge(state)
+                    view.knowledge.tick_knowledge(state.tick, [u for u in state.units if u.team==view.knowledge.team and u.is_in_base(state)])
                 last_tick = current_time
         else:
             # Client mode: poll for knowledge updates
