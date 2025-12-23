@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import Any
 import argparse
 import pygame
+import pygame_gui
 
 from core import Pos, Region
 from mechanics import (
@@ -331,6 +332,7 @@ def main() -> None:
     padding = 10
     label_height = 25
     slider_height = 30
+    plan_area_height = 240  # Space for plan display and buttons below player maps
 
     # Create the game state first to get grid dimensions
     food_config = FoodConfig(
@@ -342,14 +344,21 @@ def main() -> None:
     map_pixel_size = state.grid_width * TILE_SIZE
 
     window_width = map_pixel_size * 3 + padding * 4
-    window_height = map_pixel_size + padding * 2 + label_height + slider_height
+    window_height = map_pixel_size + padding * 2 + label_height + slider_height + plan_area_height
 
     screen = pygame.display.set_mode((window_width, window_height))
     pygame.display.set_caption("Ant RTS")
 
     font = pygame.font.Font(None, 20)
 
+    # Initialize pygame_gui manager
+    ui_manager = pygame_gui.UIManager((window_width, window_height))
+
     clock = pygame.time.Clock()
+
+    # Plan text box (will be created when needed)
+    plan_text_box: pygame_gui.elements.UITextBox | None = None
+    last_plan_html: str | None = None  # Track last plan content to avoid unnecessary updates
 
     red_offset_x = padding
     god_offset_x = padding * 2 + map_pixel_size
@@ -369,13 +378,21 @@ def main() -> None:
     running = True
     while running:
         current_time = pygame.time.get_ticks()
+        time_delta = clock.tick(60) / 1000.0
 
         for event in pygame.event.get():
+            # Process pygame_gui events
+            ui_manager.process_events(event)
+
             if event.type == pygame.QUIT:
                 running = False
 
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 mx, my = event.pos
+
+                # Skip manual handling if click is on a UI element (like the scrollbar)
+                if plan_text_box is not None and plan_text_box.rect.collidepoint(mx, my):
+                    continue
 
                 # Check LIVE buttons
                 if red_live_rect.collidepoint(mx, my):
@@ -436,18 +453,26 @@ def main() -> None:
                                 state.working_plan = Plan()
 
             elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
-                dragging_slider = None
-
-            elif event.type == pygame.MOUSEMOTION and dragging_slider is not None:
+                # Only handle if not on UI element
                 mx, my = event.pos
-                if dragging_slider == Team.RED:
-                    rel_x = mx - red_slider_rect.x
-                    pct = max(0, min(1, rel_x / red_slider_rect.width))
-                    state.view_tick[Team.RED] = int(pct * state.tick)
-                else:
-                    rel_x = mx - blue_slider_rect.x
-                    pct = max(0, min(1, rel_x / blue_slider_rect.width))
-                    state.view_tick[Team.BLUE] = int(pct * state.tick)
+                if plan_text_box is None or not plan_text_box.rect.collidepoint(mx, my):
+                    dragging_slider = None
+
+            elif event.type == pygame.MOUSEMOTION:
+                mx, my = event.pos
+                # Skip if on UI element
+                if plan_text_box is not None and plan_text_box.rect.collidepoint(mx, my):
+                    continue
+
+                if dragging_slider is not None:
+                    if dragging_slider == Team.RED:
+                        rel_x = mx - red_slider_rect.x
+                        pct = max(0, min(1, rel_x / red_slider_rect.width))
+                        state.view_tick[Team.RED] = int(pct * state.tick)
+                    else:
+                        rel_x = mx - blue_slider_rect.x
+                        pct = max(0, min(1, rel_x / blue_slider_rect.width))
+                        state.view_tick[Team.BLUE] = int(pct * state.tick)
 
         # Game tick
         if current_time - last_tick >= tick_interval:
@@ -495,19 +520,58 @@ def main() -> None:
         issue_plan_rect: pygame.Rect | None = None
         clear_plan_rect: pygame.Rect | None = None
         if state.selected_unit is not None:
+            # Determine which player's map to show the plan under
             team_name = state.selected_unit.team.value
+            plan_offset_x = red_offset_x if state.selected_unit.team == Team.RED else blue_offset_x
+
+            # Show selection indicator in God's Eye view area
             sel_text = font.render(
                 f"Selected: {team_name} unit - click {team_name}'s map to add waypoints",
                 True, (255, 255, 0),
             )
             screen.blit(sel_text, (god_offset_x, slider_y))
 
-            # Draw "Issue Plan" and "Clear" buttons
-            btn_y = slider_y
+            # Display the working plan in a scrollable text box
+            plan_y = slider_y + 30  # Start below the slider
+            plan_box_height = 180  # Fixed height for scrollable area (doubled)
+            btn_y = plan_y + plan_box_height + 5  # Position buttons below the text box
+
+            if state.working_plan is not None:
+                plan_lines = format_plan(state.working_plan, state.selected_unit)
+                plan_html = "<br>".join(plan_lines)
+
+                # Create or update the plan text box
+                text_box_rect = pygame.Rect(plan_offset_x, plan_y, map_pixel_size, plan_box_height)
+
+                # Only recreate or update if position changed or content changed
+                if plan_text_box is None or plan_text_box.relative_rect != text_box_rect:
+                    # Position changed, need to recreate
+                    if plan_text_box is not None:
+                        plan_text_box.kill()
+                    plan_text_box = pygame_gui.elements.UITextBox(
+                        html_text=plan_html,
+                        relative_rect=text_box_rect,
+                        manager=ui_manager,
+                        wrap_to_height=False,
+                    )
+                    last_plan_html = plan_html
+                elif plan_html != last_plan_html:
+                    # Content changed, update text
+                    plan_text_box.set_text(plan_html)
+                    plan_text_box.rebuild()
+                    last_plan_html = plan_html
+                # else: content unchanged, don't touch the text box (preserves scroll)
+            elif plan_text_box is not None:
+                # No plan, remove the text box
+                plan_text_box.kill()
+                plan_text_box = None
+                last_plan_html = None
+
+            # Draw "Issue Plan" and "Clear" buttons below the plan
             btn_height = 20
 
             # Issue Plan button
-            issue_plan_rect = pygame.Rect(god_offset_x + 500, btn_y, 80, btn_height)
+            issue_plan_rect = pygame.Rect(plan_offset_x, btn_y, 80, btn_height)
             btn_color = (50, 150, 50) if state.working_plan and state.working_plan.orders else (80, 80, 80)
             pygame.draw.rect(screen, btn_color, issue_plan_rect)
             pygame.draw.rect(screen, (150, 150, 150), issue_plan_rect, 1)
@@ -515,23 +579,23 @@ def main() -> None:
             screen.blit(issue_text, (issue_plan_rect.x + 5, issue_plan_rect.y + 4))
 
             # Clear button
-            clear_plan_rect = pygame.Rect(god_offset_x + 590, btn_y, 50, btn_height)
+            clear_plan_rect = pygame.Rect(plan_offset_x + 90, btn_y, 50, btn_height)
             pygame.draw.rect(screen, (150, 50, 50), clear_plan_rect)
             pygame.draw.rect(screen, (150, 150, 150), clear_plan_rect, 1)
             clear_text = font.render("Clear", True, (255, 255, 255))
             screen.blit(clear_text, (clear_plan_rect.x + 8, clear_plan_rect.y + 4))
+        elif plan_text_box is not None:
+            # No selected unit, remove the text box
+            plan_text_box.kill()
+            plan_text_box = None
 
-            # Display the working plan below the selection indicator
-            if state.working_plan is not None:
-                plan_lines = format_plan(state.working_plan, state.selected_unit)
-                y_offset = slider_y + 25  # Start below the selection text
-                for line in plan_lines:
-                    plan_text = font.render(line, True, (200, 200, 200))
-                    screen.blit(plan_text, (god_offset_x, y_offset))
-                    y_offset += 20  # Line spacing
+        # Update UI manager
+        ui_manager.update(time_delta)
+
+        # Draw UI manager
+        ui_manager.draw_ui(screen)
 
         pygame.display.flip()
-        clock.tick(60)
 
     pygame.quit()
 
