@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Protocol, TypeVar, Generic, Callable, Any
 import random
+import numpy as np
 import noise  # type: ignore
 
 from core import Timestamp, Pos, Region
@@ -267,8 +268,8 @@ def _generate_random_base(seed_pos: Pos, target_size: int = 12, grid_width: int 
     return Region(frozenset(cells))
 
 
-def _generate_food(config: FoodConfig, grid_width: int = GRID_SIZE, grid_height: int = GRID_SIZE) -> set[Pos]:
-    """Generate food locations using Perlin noise.
+def _generate_food(config: FoodConfig, grid_width: int = GRID_SIZE, grid_height: int = GRID_SIZE) -> dict[Pos, int]:
+    """Generate food locations using Perlin noise with Poisson-distributed counts.
 
     Args:
         config: FoodConfig with noise parameters
@@ -276,12 +277,14 @@ def _generate_food(config: FoodConfig, grid_width: int = GRID_SIZE, grid_height:
         grid_height: Height of the grid (default: GRID_SIZE)
 
     Returns:
-        A set of Pos where food is located
+        A dict mapping Pos to food count at that position
     """
     # Set random seed if provided
     seed = config.seed if config.seed is not None else random.randint(0, 1000000)
+    if config.seed is not None:
+        np.random.seed(config.seed)
 
-    food_locations = set()
+    food_counts: dict[Pos, int] = {}
 
     for x in range(grid_width):
         for y in range(grid_height):
@@ -301,14 +304,18 @@ def _generate_food(config: FoodConfig, grid_width: int = GRID_SIZE, grid_height:
             # Perlin noise returns values in range [-1, 1], normalize to [0, 1]
             normalized_value = (noise_value + 1) / 2
 
-            # Map to probability range [0, max_prob]
-            probability = normalized_value * config.max_prob
+            # Map to mean range [0, max_prob] for Poisson distribution
+            # max_prob now represents the maximum mean for the Poisson distribution
+            poisson_mean = normalized_value * config.max_prob
 
-            # Randomly place food based on probability
-            if random.random() < probability:
-                food_locations.add(Pos(x, y))
+            # Generate food count using Poisson distribution
+            food_count = int(np.random.poisson(poisson_mean))
 
-    return food_locations
+            # Only store non-zero counts
+            if food_count > 0:
+                food_counts[Pos(x, y)] = food_count
+
+    return food_counts
 
 
 @dataclass
@@ -349,8 +356,8 @@ class GameState:
     # Grid dimensions
     grid_width: int = GRID_SIZE
     grid_height: int = GRID_SIZE
-    # Food locations on the grid
-    food: set[Pos] = field(default_factory=set)
+    # Food locations on the grid with counts
+    food: dict[Pos, int] = field(default_factory=dict)
     # Configuration for food generation
     food_config: FoodConfig = field(default_factory=FoodConfig)
 

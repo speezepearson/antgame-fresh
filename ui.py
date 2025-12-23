@@ -111,7 +111,7 @@ def draw_unit_at(
         pygame.draw.circle(surface, (255, 255, 0), (center_x, center_y), radius + 3, 2)
 
 
-def draw_food(surface: pygame.Surface, food: set[Pos], offset_x: int, offset_y: int) -> None:
+def draw_food(surface: pygame.Surface, food: dict[Pos, int], offset_x: int, offset_y: int) -> None:
     """Draw food as small green dots."""
     for pos in food:
         center_x = offset_x + pos.x * TILE_SIZE + TILE_SIZE // 2
@@ -190,7 +190,7 @@ def draw_player_view(
                         draw_base(surface, state.get_base_region(contents.team), contents.team, offset_x, offset_y)
                         drawn_bases.add(contents.team)
         # Second pass: draw food in visible areas
-        visible_food = state.food & observations.keys()
+        visible_food = {pos: count for pos, count in state.food.items() if pos in observations}
         draw_food(surface, visible_food, offset_x, offset_y)
         # Third pass: draw units on top
         for pos, contents_list in observations.items():
