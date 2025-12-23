@@ -358,6 +358,7 @@ def main() -> None:
 
     # Plan text box (will be created when needed)
     plan_text_box: pygame_gui.elements.UITextBox | None = None
+    last_plan_html: str | None = None  # Track last plan content to avoid unnecessary updates
 
     red_offset_x = padding
     god_offset_x = padding * 2 + map_pixel_size
@@ -541,7 +542,10 @@ def main() -> None:
 
                 # Create or update the plan text box
                 text_box_rect = pygame.Rect(plan_offset_x, plan_y, map_pixel_size, plan_box_height)
+
+                # Only recreate or update if position changed or content changed
                 if plan_text_box is None or plan_text_box.relative_rect != text_box_rect:
+                    # Position changed, need to recreate
                     if plan_text_box is not None:
                         plan_text_box.kill()
                     plan_text_box = pygame_gui.elements.UITextBox(
@@ -550,13 +554,18 @@ def main() -> None:
                         manager=ui_manager,
                         wrap_to_height=False,
                     )
-                else:
+                    last_plan_html = plan_html
+                elif plan_html != last_plan_html:
+                    # Content changed, update text
                     plan_text_box.set_text(plan_html)
                     plan_text_box.rebuild()
+                    last_plan_html = plan_html
+                # else: content unchanged, don't touch the text box (preserves scroll)
             elif plan_text_box is not None:
                 # No plan, remove the text box
                 plan_text_box.kill()
                 plan_text_box = None
+                last_plan_html = None
 
             # Draw "Issue Plan" and "Clear" buttons below the plan
             btn_height = 20
