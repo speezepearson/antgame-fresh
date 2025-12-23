@@ -22,12 +22,13 @@ class PlayerKnowledge:
     grid_width: int
     grid_height: int
     tick: Timestamp
-    
+
 
     all_observations: ObservationLog = field(default_factory=dict)
     last_seen: dict[UnitId, tuple[Timestamp, Unit]] = field(default_factory=dict)
     expected_trajectories: dict[UnitId, ExpectedTrajectory] = field(default_factory=dict)
     last_observations: LastObservations = field(default_factory=dict)
+    units_in_base: list[Unit] = field(default_factory=list)
 
     def add_raw_observations(self, game: GameState, observations: RawObservations) -> None:
         self.all_observations.setdefault(game.tick, {}).update(observations)
@@ -91,6 +92,12 @@ class PlayerKnowledge:
         self.compute_expected_trajectories(state)
         self.record_observations_from_bases(state)
         self.tick = state.tick
+
+        # Update units_in_base
+        self.units_in_base = [
+            unit for unit in state.units
+            if unit.team == self.team and unit.is_in_base(state)
+        ]
 
     def compute_expected_trajectories(self, state: GameState) -> None:
         visible = self.get_currently_visible_cells()

@@ -125,6 +125,9 @@ def serialize_knowledge(knowledge: PlayerKnowledge) -> dict[str, Any]:
             [serialize_cell_contents(c) for c in contents_list],
         ]
 
+    # Serialize units_in_base
+    units_in_base = [serialize_unit(unit) for unit in knowledge.units_in_base]
+
     return {
         "team": knowledge.team.value,
         "grid_width": knowledge.grid_width,
@@ -132,6 +135,7 @@ def serialize_knowledge(knowledge: PlayerKnowledge) -> dict[str, Any]:
         "tick": knowledge.tick,
         "all_observations": all_observations,
         "last_observations": last_observations,
+        "units_in_base": units_in_base,
     }
 
 
@@ -147,6 +151,41 @@ def serialize_cell_contents(contents: Any) -> dict[str, Any]:
         return {"type": "FoodPresent", "count": contents.count}
     else:
         raise ValueError(f"Unknown contents type: {type(contents)}")
+
+
+def serialize_unit(unit: Any) -> dict[str, Any]:
+    """Serialize a Unit to JSON-compatible dict."""
+    from mechanics import Unit, Plan
+
+    return {
+        "id": unit.id,
+        "team": unit.team.value,
+        "pos": {"x": unit.pos.x, "y": unit.pos.y},
+        "original_pos": {"x": unit.original_pos.x, "y": unit.original_pos.y},
+        "plan": serialize_plan(unit.plan),
+        "visibility_radius": unit.visibility_radius,
+        "carrying_food": unit.carrying_food,
+    }
+
+
+def serialize_plan(plan: Any) -> dict[str, Any]:
+    """Serialize a Plan to JSON-compatible dict."""
+    from mechanics import Move
+
+    orders = []
+    for order in plan.orders:
+        if isinstance(order, Move):
+            orders.append({
+                "type": "Move",
+                "target": {"x": order.target.x, "y": order.target.y},
+            })
+
+    # Note: We're not serializing interrupts here as they're complex
+    # and clients can use default interrupts
+    return {
+        "orders": orders,
+        "interrupts": [],
+    }
 
 
 def deserialize_plan(data: dict[str, Any]) -> Plan:

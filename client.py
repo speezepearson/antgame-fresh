@@ -190,6 +190,9 @@ class RemoteGameClient(GameClient):
                     last_contents.append(FoodPresent(c["count"]))
             last_observations[pos] = (tick, last_contents)
 
+        # Deserialize units_in_base
+        units_in_base = [self._deserialize_unit(u) for u in data.get("units_in_base", [])]
+
         return PlayerKnowledge(
             team=Team(data["team"]),
             grid_width=data["grid_width"],
@@ -197,4 +200,28 @@ class RemoteGameClient(GameClient):
             tick=data["tick"],
             all_observations=all_observations,
             last_observations=last_observations,
+            units_in_base=units_in_base,
+        )
+
+    def _deserialize_unit(self, data: dict[str, Any]) -> Any:
+        """Deserialize a Unit from JSON data."""
+        from mechanics import Unit, UnitId, Plan, Move, Order
+
+        # Deserialize plan
+        orders: list[Order] = []
+        for order_data in data.get("plan", {}).get("orders", []):
+            if order_data["type"] == "Move":
+                target = order_data["target"]
+                orders.append(Move(target=Pos(target["x"], target["y"])))
+
+        plan = Plan(orders=orders, interrupts=[])
+
+        return Unit(
+            id=UnitId(data["id"]),
+            team=Team(data["team"]),
+            pos=Pos(data["pos"]["x"], data["pos"]["y"]),
+            original_pos=Pos(data["original_pos"]["x"], data["original_pos"]["y"]),
+            plan=plan,
+            visibility_radius=data.get("visibility_radius", 5),
+            carrying_food=data.get("carrying_food", 0),
         )
