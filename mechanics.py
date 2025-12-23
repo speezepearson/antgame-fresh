@@ -12,7 +12,6 @@ from core import Timestamp, Pos, Region
 
 # Game Constants
 GRID_SIZE = 32
-VISIBILITY_RADIUS = 8
 
 
 class Team(Enum):
@@ -213,6 +212,7 @@ class Unit:
     # Observations since last sync with home base
     logbook: Logbook = field(default_factory=dict)
     last_sync_tick: Timestamp = 0
+    visibility_radius: int = 5
 
     def home_pos(self) -> Pos:
         """Get this unit's original spawn position (for returning home)."""
@@ -289,22 +289,30 @@ class GameState:
         return next(iter(self.get_base_region(team).cells))
 
     def _record_observations_from_bases(self) -> None:
-        """Record observations from each base region's edge cells."""
+        """Record observations from each base region and units in the base."""
         for team in [Team.RED, Team.BLUE]:
+            # Start with base region observations
             observations = self._observe_from_base_region(team)
+
+            # Add observations from units currently in the base
+            for unit in self.units:
+                if unit.team == team and unit.is_near_base():
+                    unit_observations = self._observe_from_position(unit.pos, unit.visibility_radius)
+                    observations.update(unit_observations)
+
             if observations:
                 if self.tick not in self.base_logbooks[team]:
                     self.base_logbooks[team][self.tick] = {}
                 self.base_logbooks[team][self.tick].update(observations)
 
-    def _observe_from_position(self, observer_pos: Pos) -> dict[Pos, list[CellContents]]:
+    def _observe_from_position(self, observer_pos: Pos, visibility_radius: int) -> dict[Pos, list[CellContents]]:
         """Return what can be observed from a given position."""
         observations: dict[Pos, list[CellContents]] = {}
 
         # Check all positions within visibility radius
-        for dx in range(-VISIBILITY_RADIUS, VISIBILITY_RADIUS + 1):
-            for dy in range(-VISIBILITY_RADIUS, VISIBILITY_RADIUS + 1):
-                if abs(dx) + abs(dy) <= VISIBILITY_RADIUS:
+        for dx in range(-visibility_radius, visibility_radius + 1):
+            for dy in range(-visibility_radius, visibility_radius + 1):
+                if abs(dx) + abs(dy) <= visibility_radius:
                     pos = Pos(observer_pos.x + dx, observer_pos.y + dy)
                     if 0 <= pos.x < self.grid_width and 0 <= pos.y < self.grid_height:
                         # Check what's at this position
@@ -314,13 +322,13 @@ class GameState:
         return observations
 
     def _observe_from_base_region(self, team: Team) -> dict[Pos, list[CellContents]]:
-        """Observe from all edge cells of a base region, return union."""
+        """Observe only the tiles within the base region itself."""
         region = self.get_base_region(team)
-        all_observations: dict[Pos, list[CellContents]] = {}
-        for edge_pos in region.get_edge_cells():
-            observations = self._observe_from_position(edge_pos)
-            all_observations.update(observations)
-        return all_observations
+        observations: dict[Pos, list[CellContents]] = {}
+        for pos in region.cells:
+            contents = self._get_contents_at(pos)
+            observations[pos] = contents
+        return observations
 
     def _get_contents_at(self, pos: Pos) -> list[CellContents]:
         """Determine what's actually at a position right now."""
@@ -361,13 +369,13 @@ def tick_game(state: GameState) -> None:
     """Advance the game by one tick."""
     # 1. Record observations for all units
     for unit in state.units:
-        observations = state._observe_from_position(unit.pos)
+        observations = state._observe_from_position(unit.pos, unit.visibility_radius)
         unit.logbook[state.tick] = observations
 
     # 2. Check interrupts for each unit
     for unit in state.units:
         # Get current observations for this unit
-        observations = state._observe_from_position(unit.pos)
+        observations = state._observe_from_position(unit.pos, unit.visibility_radius)
 
         # Check each interrupt condition
         for interrupt in unit.plan.interrupts:

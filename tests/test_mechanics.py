@@ -238,10 +238,11 @@ class TestGameStateObserveFromPosition:
         state = GameState()
         state.units = []
         observer_pos = Pos(10, 10)
+        visibility_radius = 8
 
-        observations = state._observe_from_position(observer_pos)
+        observations = state._observe_from_position(observer_pos, visibility_radius)
 
-        # Should observe positions within VISIBILITY_RADIUS (8)
+        # Should observe positions within visibility_radius (8)
         assert Pos(10, 10) in observations  # Self
         assert Pos(18, 10) in observations  # 8 away horizontally
         assert Pos(10, 18) in observations  # 8 away vertically
@@ -250,10 +251,11 @@ class TestGameStateObserveFromPosition:
         state = GameState()
         state.units = []
         observer_pos = Pos(10, 10)
+        visibility_radius = 8
 
-        observations = state._observe_from_position(observer_pos)
+        observations = state._observe_from_position(observer_pos, visibility_radius)
 
-        # Should not observe positions beyond VISIBILITY_RADIUS (8)
+        # Should not observe positions beyond visibility_radius (8)
         assert Pos(19, 10) not in observations  # 9 away
         assert Pos(10, 19) not in observations  # 9 away
 
@@ -261,8 +263,9 @@ class TestGameStateObserveFromPosition:
         state = GameState()
         state.units = []
         observer_pos = Pos(0, 0)
+        visibility_radius = 8
 
-        observations = state._observe_from_position(observer_pos)
+        observations = state._observe_from_position(observer_pos, visibility_radius)
 
         # All observed positions should be on the grid
         for pos in observations.keys():
