@@ -321,8 +321,8 @@ def main() -> None:
                         help='Perlin noise persistence for food generation (default: 0.5)')
     parser.add_argument('--food-lacunarity', type=float, default=2.0,
                         help='Perlin noise lacunarity for food generation (default: 2.0)')
-    parser.add_argument('--food-max-prob', type=float, default=0.3,
-                        help='Maximum probability of food in a cell (default: 0.3)')
+    parser.add_argument('--food-max-prob', type=float, default=0.1,
+                        help='Maximum probability of food in a cell (default: 0.1)')
     parser.add_argument('--food-seed', type=int, default=None,
                         help='Random seed for food generation (default: random)')
     args = parser.parse_args()

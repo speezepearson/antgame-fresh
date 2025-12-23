@@ -23,7 +23,7 @@ class FoodConfig:
     octaves: int = 3
     persistence: float = 0.5
     lacunarity: float = 2.0
-    max_prob: float = 0.3
+    max_prob: float = 0.1
     seed: int | None = None
 
 
