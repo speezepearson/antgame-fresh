@@ -19,6 +19,7 @@ class Pos:
 @dataclass(frozen=True)
 class Region:
     """A set of positions."""
+
     cells: frozenset[Pos]
 
     def contains(self, pos: Pos) -> bool:

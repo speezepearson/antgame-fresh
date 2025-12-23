@@ -1,13 +1,50 @@
 """Tests for game mechanics."""
 
 import random
+from typing import Iterable, Mapping
 import pytest
 from core import Pos, Region
 from mechanics import (
-    Team, Unit, GameState, Move, Plan,
-    EnemyInRangeCondition, BaseVisibleCondition, PositionReachedCondition,
-    FoodInRange, UnitPresent, BasePresent, FoodPresent, Empty, tick_game, CellContents,
+    Interrupt,
+    MoveThereAction,
+    Team,
+    Unit,
+    GameState,
+    Move,
+    Plan,
+    EnemyInRangeCondition,
+    BaseVisibleCondition,
+    PositionReachedCondition,
+    FoodInRangeCondition,
+    UnitPresent,
+    BasePresent,
+    FoodPresent,
+    Empty,
+    tick_game,
+    CellContents,
 )
+
+
+def make_simple_game(
+    grid_width: int = 10,
+    grid_height: int = 10,
+    red_base: Region | None = None,
+    blue_base: Region | None = None,
+    units: Iterable[Unit] = (),
+    food: Mapping[Pos, int] = {},
+) -> GameState:
+    units = list(units)
+    posns = [*[u.pos for u in units], *food.keys(), Pos(grid_width-1, grid_height-1)]
+    return GameState(
+        grid_width=max(p.x for p in posns)+1,
+        grid_height=max(p.y for p in posns)+1,
+        base_regions={
+            Team.RED: Region(cells=frozenset(red_base.cells) if red_base is not None else frozenset({Pos(0,0)})),
+            Team.BLUE: Region(cells=frozenset(blue_base.cells) if blue_base is not None else frozenset({Pos(grid_width-1, grid_height-1)})),
+        },
+        units=units,
+        food=dict(food),
+    )
 
 
 class TestMove:
@@ -24,7 +61,7 @@ class TestMove:
     def test_moves_unit_horizontally(self) -> None:
         unit = Unit(Team.RED, Pos(0, 5), Pos(0, 5))
         move = Move(target=Pos(3, 5))
-        state = GameState()
+        state = make_simple_game()
 
         move.execute_step(unit, state)
         assert unit.pos == Pos(1, 5)
@@ -32,7 +69,7 @@ class TestMove:
     def test_moves_unit_vertically(self) -> None:
         unit = Unit(Team.RED, Pos(5, 0), Pos(5, 0))
         move = Move(target=Pos(5, 3))
-        state = GameState()
+        state = make_simple_game()
 
         move.execute_step(unit, state)
         assert unit.pos == Pos(5, 1)
@@ -41,7 +78,7 @@ class TestMove:
         unit = Unit(Team.RED, Pos(0, 0), Pos(0, 0))
         target = Pos(5, 5)
         move = Move(target=target)
-        state = GameState()
+        state = make_simple_game()
 
         initial_distance = unit.pos.manhattan_distance(target)
         move.execute_step(unit, state)
@@ -52,7 +89,7 @@ class TestMove:
     def test_does_not_move_when_already_at_target(self) -> None:
         unit = Unit(Team.RED, Pos(5, 5), Pos(5, 5))
         move = Move(target=Pos(5, 5))
-        state = GameState()
+        state = make_simple_game()
 
         move.execute_step(unit, state)
         assert unit.pos == Pos(5, 5)
@@ -86,9 +123,7 @@ class TestEnemyInRangeCondition:
     def test_does_not_fire_when_no_units_visible(self) -> None:
         unit = Unit(Team.RED, Pos(5, 5), Pos(5, 5))
         condition = EnemyInRangeCondition(distance=3)
-        observations: dict[Pos, list[CellContents]] = {
-            Pos(6, 5): [Empty()]
-        }
+        observations: dict[Pos, list[CellContents]] = {Pos(6, 5): [Empty()]}
         assert not condition.evaluate(unit, observations)
 
     def test_fires_when_enemy_at_exact_range(self) -> None:
@@ -120,9 +155,7 @@ class TestBaseVisibleCondition:
     def test_does_not_fire_when_no_base_visible(self) -> None:
         unit = Unit(Team.RED, Pos(5, 5), Pos(5, 5))
         condition = BaseVisibleCondition()
-        observations: dict[Pos, list[CellContents]] = {
-            Pos(10, 10): [Empty()]
-        }
+        observations: dict[Pos, list[CellContents]] = {Pos(10, 10): [Empty()]}
         assert not condition.evaluate(unit, observations)
 
 
@@ -170,50 +203,30 @@ class TestPlan:
         assert plan.orders == [interrupt_order]
 
 
-class TestGetBaseRegion:
-    def test_red_base_is_on_left_side(self) -> None:
-        random.seed(42)
-        state = GameState()
-        region = state.get_base_region(Team.RED)
-        # All cells should have small x values (left half of grid)
-        for cell in region.cells:
-            assert cell.x < state.grid_width // 2
-
-    def test_blue_base_is_on_right_side(self) -> None:
-        random.seed(42)
-        state = GameState()
-        region = state.get_base_region(Team.BLUE)
-        # All cells should have large x values (right half of grid)
-        for cell in region.cells:
-            assert cell.x >= state.grid_width // 2
-
-    def test_base_region_has_12_cells(self) -> None:
-        random.seed(42)
-        state = GameState()
-        region = state.get_base_region(Team.RED)
-        assert len(region.cells) == 12
+    # def test_base_region_has_init_base_size_cells(self) -> None:
+    #     random.seed(42)
+    #     state = GameState(init_base_size=6)
+    #     region = state.get_base_region(Team.RED)
+    #     assert len(region.cells) == 6
 
 
 class TestGameStateGetContentsAt:
     def test_returns_empty_for_empty_cell(self) -> None:
-        state = GameState()
+        state = make_simple_game()
         # Clear units for this test
-        state.units = []
-        contents = state._get_contents_at(Pos(15, 15))
+        contents = state._get_contents_at(Pos(5, 5))
         assert len(contents) == 1
         assert isinstance(contents[0], Empty)
 
     def test_returns_unit_when_unit_at_position(self) -> None:
-        state = GameState()
-        # Place a unit at a known position outside bases
-        unit = Unit(Team.RED, Pos(15, 15), Pos(15, 15))
-        state.units = [unit]
+        unit = Unit(Team.RED, Pos(5, 5), Pos(5, 5))
+        state = make_simple_game(units=[unit])
 
-        contents = state._get_contents_at(Pos(15, 15))
+        contents = state._get_contents_at(Pos(5, 5))
         assert any(isinstance(c, UnitPresent) and c.team == Team.RED for c in contents)
 
     def test_returns_base_when_position_in_base_region(self) -> None:
-        state = GameState()
+        state = make_simple_game()
         red_base = state.get_base_region(Team.RED)
         base_cell = next(iter(red_base.cells))
 
@@ -221,7 +234,7 @@ class TestGameStateGetContentsAt:
         assert any(isinstance(c, BasePresent) and c.team == Team.RED for c in contents)
 
     def test_returns_both_unit_and_base_when_unit_in_base(self) -> None:
-        state = GameState()
+        state = make_simple_game()
         red_base = state.get_base_region(Team.RED)
         base_cell = next(iter(red_base.cells))
         unit = Unit(Team.RED, base_cell, base_cell)
@@ -235,8 +248,7 @@ class TestGameStateGetContentsAt:
 
 class TestGameStateObserveFromPosition:
     def test_observes_positions_within_visibility_radius(self) -> None:
-        state = GameState()
-        state.units = []
+        state = make_simple_game(grid_width=20, grid_height=20)
         observer_pos = Pos(10, 10)
         visibility_radius = 8
 
@@ -248,8 +260,7 @@ class TestGameStateObserveFromPosition:
         assert Pos(10, 18) in observations  # 8 away vertically
 
     def test_does_not_observe_beyond_visibility_radius(self) -> None:
-        state = GameState()
-        state.units = []
+        state = make_simple_game()
         observer_pos = Pos(10, 10)
         visibility_radius = 8
 
@@ -260,8 +271,7 @@ class TestGameStateObserveFromPosition:
         assert Pos(10, 19) not in observations  # 9 away
 
     def test_respects_grid_boundaries(self) -> None:
-        state = GameState()
-        state.units = []
+        state = make_simple_game()
         observer_pos = Pos(0, 0)
         visibility_radius = 8
 
@@ -275,7 +285,7 @@ class TestGameStateObserveFromPosition:
 
 class TestTickGame:
     def test_units_execute_movement_orders(self) -> None:
-        state = GameState()
+        state = make_simple_game(units=[Unit(Team.RED, Pos(0, 0), Pos(0, 0))])
         unit = state.units[0]
         initial_pos = unit.pos
         target = Pos(initial_pos.x + 3, initial_pos.y)
@@ -284,10 +294,12 @@ class TestTickGame:
         tick_game(state)
 
         # Unit should have moved one step closer
-        assert unit.pos.manhattan_distance(target) < initial_pos.manhattan_distance(target)
+        assert unit.pos.manhattan_distance(target) < initial_pos.manhattan_distance(
+            target
+        )
 
     def test_completes_and_removes_finished_orders(self) -> None:
-        state = GameState()
+        state = make_simple_game(units=[Unit(Team.RED, Pos(0, 0), Pos(0, 0))])
         unit = state.units[0]
         # Give an already-complete order
         unit.plan = Plan(orders=[Move(target=unit.pos)])
@@ -298,53 +310,31 @@ class TestTickGame:
         assert len(unit.plan.orders) == 0
 
     def test_interrupts_trigger_when_condition_met(self) -> None:
-        state = GameState()
-        red_unit = state.units[0]  # RED unit
-        blue_unit = state.units[3]  # BLUE unit
+        red_unit = Unit(Team.RED, Pos(10, 10), Pos(10, 10))
+        blue_unit = Unit(Team.BLUE, Pos(12, 10), Pos(12, 10))
+        state = make_simple_game(units=[red_unit, blue_unit])
 
         # Position blue unit near red unit
-        red_unit.pos = Pos(10, 10)
-        blue_unit.pos = Pos(12, 10)  # 2 away
-
-        # Give red unit a plan with interrupt
-        fallback_pos = Pos(5, 5)
-        interrupt = {
-            'condition': EnemyInRangeCondition(distance=3),
-            'action': lambda enemy_pos: [Move(target=fallback_pos)]
-        }
-        red_unit.plan = Plan(
-            orders=[Move(target=Pos(20, 20))],
-            interrupts=[type('Interrupt', (), interrupt)()]  # Mock Interrupt
-        )
-
-        from mechanics import Interrupt, Action
         red_unit.plan.interrupts = [
             Interrupt(
-                condition=EnemyInRangeCondition(distance=3),
-                action=Action(
-                    name="fallback to safe position",
-                    execute=lambda enemy_pos: [Move(target=fallback_pos)]
-                )
+                condition=EnemyInRangeCondition(distance=3), actions=[MoveThereAction()]
             )
         ]
 
         tick_game(state)
 
-        # Plan should be interrupted, current order should be the fallback
         current = red_unit.plan.current_order()
         assert isinstance(current, Move)
-        assert current.target == fallback_pos
+        assert current.target == blue_unit.pos
 
     def test_syncs_logbook_when_unit_reaches_base(self) -> None:
-        state = GameState()
-        red_unit = state.units[0]
+        red_unit = Unit(Team.RED, Pos(10, 10), Pos(10, 10))
+        state = make_simple_game(units=[red_unit])
         red_base = state.get_base_region(Team.RED)
         base_cell = next(iter(red_base.cells))
-
-        # Position unit in base and give it some observations
         red_unit.pos = base_cell
         initial_tick = state.tick
-        red_unit.logbook[5] = {Pos(10, 10): [Empty()]}
+        red_unit.logbook[initial_tick] = {base_cell: [Empty()]}
 
         tick_game(state)
 
@@ -357,7 +347,7 @@ class TestTickGame:
 class TestMutualAnnihilation:
     def test_opposing_units_on_same_cell_mutually_annihilate(self) -> None:
         """When a RED and BLUE unit occupy the same cell, both should be destroyed."""
-        state = GameState(units=[])
+        state = make_simple_game()
         red_unit = Unit(Team.RED, Pos(5, 5), Pos(5, 5))
         blue_unit = Unit(Team.BLUE, Pos(5, 5), Pos(5, 5))
         state.units = [red_unit, blue_unit]
@@ -369,7 +359,7 @@ class TestMutualAnnihilation:
 
     def test_opposing_units_moving_to_same_cell_mutually_annihilate(self) -> None:
         """When units from opposing teams move onto the same cell, they should destroy each other."""
-        state = GameState(units=[])
+        state = make_simple_game()
         red_unit = Unit(Team.RED, Pos(5, 5), Pos(5, 5))
         blue_unit = Unit(Team.BLUE, Pos(7, 5), Pos(7, 5))
 
@@ -392,7 +382,7 @@ class TestMutualAnnihilation:
 
     def test_allied_units_on_same_cell_do_not_annihilate(self) -> None:
         """When units from the same team occupy the same cell, they should not be destroyed."""
-        state = GameState(units=[])
+        state = make_simple_game()
         red_unit1 = Unit(Team.RED, Pos(5, 5), Pos(5, 5))
         red_unit2 = Unit(Team.RED, Pos(5, 5), Pos(5, 5))
         state.units = [red_unit1, red_unit2]
@@ -404,7 +394,7 @@ class TestMutualAnnihilation:
 
     def test_multiple_opposing_units_on_same_cell_all_annihilate(self) -> None:
         """When multiple units from different teams are on the same cell, all should be destroyed."""
-        state = GameState(units=[])
+        state = make_simple_game()
         red_unit1 = Unit(Team.RED, Pos(5, 5), Pos(5, 5))
         red_unit2 = Unit(Team.RED, Pos(5, 5), Pos(5, 5))
         blue_unit1 = Unit(Team.BLUE, Pos(5, 5), Pos(5, 5))
@@ -418,7 +408,7 @@ class TestMutualAnnihilation:
 
     def test_annihilation_at_one_position_does_not_affect_units_elsewhere(self) -> None:
         """Mutual annihilation at one position should not affect units at other positions."""
-        state = GameState(units=[])
+        state = make_simple_game()
         # Units at (5, 5) that will annihilate
         red_unit1 = Unit(Team.RED, Pos(5, 5), Pos(5, 5))
         blue_unit1 = Unit(Team.BLUE, Pos(5, 5), Pos(5, 5))
@@ -440,7 +430,7 @@ class TestMutualAnnihilation:
 class TestFoodInRange:
     def test_fires_when_food_is_visible(self) -> None:
         unit = Unit(Team.RED, Pos(5, 5), Pos(5, 5))
-        condition = FoodInRange()
+        condition = FoodInRangeCondition(distance=5)
         observations: dict[Pos, list[CellContents]] = {
             Pos(7, 5): [FoodPresent(count=1)]  # Distance 2
         }
@@ -448,7 +438,7 @@ class TestFoodInRange:
 
     def test_returns_nearest_food_when_multiple_visible(self) -> None:
         unit = Unit(Team.RED, Pos(5, 5), Pos(5, 5))
-        condition = FoodInRange()
+        condition = FoodInRangeCondition(distance=5)
         observations: dict[Pos, list[CellContents]] = {
             Pos(7, 5): [FoodPresent(count=1)],  # Distance 2
             Pos(10, 10): [FoodPresent(count=1)],  # Distance 10
@@ -460,123 +450,105 @@ class TestFoodInRange:
 
     def test_does_not_fire_when_no_food_visible(self) -> None:
         unit = Unit(Team.RED, Pos(5, 5), Pos(5, 5))
-        condition = FoodInRange()
-        observations: dict[Pos, list[CellContents]] = {
-            Pos(6, 5): [Empty()]
-        }
+        condition = FoodInRangeCondition(distance=5)
+        observations: dict[Pos, list[CellContents]] = {Pos(6, 5): [Empty()]}
         assert condition.evaluate(unit, observations) is None
 
 
 class TestFoodObservation:
     def test_food_appears_in_observations(self) -> None:
-        state = GameState()
-        state.units = []
+        state = make_simple_game()
         state.food[Pos(10, 10)] = 3
 
         contents = state._get_contents_at(Pos(10, 10))
         assert any(isinstance(c, FoodPresent) and c.count == 3 for c in contents)
 
     def test_no_food_when_position_has_no_food(self) -> None:
-        state = GameState()
-        state.units = []
-        state.food = {}
+        state = make_simple_game()
 
         contents = state._get_contents_at(Pos(10, 10))
         assert not any(isinstance(c, FoodPresent) for c in contents)
 
 
-class TestFoodMovesWithUnit:
-    def test_food_moves_when_unit_moves(self) -> None:
-        state = GameState()
-        state.units = []
-        unit = Unit(Team.RED, Pos(5, 5), Pos(5, 5))
+class TestUnitsCarryFood:
+    def test_food_vanishes_when_unit_steps_onto_it(self) -> None:
+        state = make_simple_game()
+        unit = Unit(Team.RED, Pos(0, 0), Pos(0, 0))
         state.units.append(unit)
-        state.food[Pos(5, 5)] = 2
+        state.food[Pos(0, 2)] = 2
 
-        # Give unit a move order
-        unit.plan = Plan(orders=[Move(target=Pos(10, 5))])
+        unit.plan = Plan(orders=[Move(target=Pos(0, 2))])
 
-        # Execute one tick
         tick_game(state)
+        assert state.food.get(Pos(0, 2)) == 2
 
-        # Unit should have moved one step
-        assert unit.pos == Pos(6, 5)
-        # Food should have moved with it
-        assert Pos(5, 5) not in state.food
-        assert state.food.get(Pos(6, 5)) == 2
-
-    def test_food_does_not_move_when_unit_has_no_orders(self) -> None:
-        state = GameState()
-        state.units = []
-        unit = Unit(Team.RED, Pos(5, 5), Pos(5, 5))
-        state.units.append(unit)
-        state.food[Pos(5, 5)] = 2
-
-        # No orders for the unit
         tick_game(state)
-
-        # Food should still be at the same position
-        assert state.food.get(Pos(5, 5)) == 2
-
-    def test_multiple_food_items_move_together(self) -> None:
-        state = GameState()
-        state.units = []
-        unit = Unit(Team.RED, Pos(5, 5), Pos(5, 5))
-        state.units.append(unit)
-        state.food[Pos(5, 5)] = 5
-
-        unit.plan = Plan(orders=[Move(target=Pos(10, 5))])
         tick_game(state)
+        tick_game(state)
+        assert state.food.get(Pos(0, 2), 0) == 0
+        assert unit.carrying_food == 2
 
-        # All food items should move together
-        assert Pos(5, 5) not in state.food
-        assert state.food.get(Pos(6, 5)) == 5
+    def test_unit_drops_food_when_annihilated(self) -> None:
+        state = make_simple_game()
+        red_unit = Unit(Team.RED, Pos(0, 0), Pos(0, 0), carrying_food=2)
+        blue_unit = Unit(Team.BLUE, Pos(0, 2), Pos(0, 2), carrying_food=3)
+        red_unit.plan = Plan(orders=[Move(target=blue_unit.pos)])
+        state.units = [red_unit, blue_unit]
+
+        tick_game(state)
+        assert state.food.get(Pos(0, 2), 0) == 0
+
+        tick_game(state)
+        assert not state.units
+        assert state.food.get(Pos(0, 2)) == 5
 
 
-class TestFoodSpawnsUnits:
-    def test_food_at_base_spawns_unit_in_empty_cell(self) -> None:
-        state = GameState()
-        # Clear all units for clean test
-        state.units = []
-
-        # Get a base cell and place food there
+class TestCarriedFoodSpawnsUnits:
+    def test_unit_carrying_food_in_own_base_spawns_unit_in_empty_cell(self) -> None:
+        state = make_simple_game(red_base=Region(cells=frozenset({Pos(0, i) for i in range(5)})))
         red_base = state.get_base_region(Team.RED)
-        base_cell = next(iter(red_base.cells))
-        state.food[base_cell] = 1
+        red_unit = Unit(
+            Team.RED,
+            next(iter(red_base.cells)),
+            next(iter(red_base.cells)),
+            carrying_food=1,
+        )
+        state.units = [red_unit]
 
-        initial_unit_count = len(state.units)
         tick_game(state)
 
-        # A new unit should have been spawned
-        assert len(state.units) == initial_unit_count + 1
-        # Food should be consumed
-        assert state.food.get(base_cell, 0) == 0
+        assert len(state.units) == 2
+        assert {unit.pos for unit in state.units} <= red_base.cells
 
-    def test_spawned_unit_is_at_closest_empty_cell(self) -> None:
-        state = GameState()
-        state.units = []
-
+    def test_unit_loses_food_when_unit_is_spawned(self) -> None:
+        state = make_simple_game(red_base=Region(cells=frozenset({Pos(0, i) for i in range(5)})))
         red_base = state.get_base_region(Team.RED)
-        base_cells = list(red_base.cells)
-
-        # Place food at the first cell
-        food_pos = base_cells[0]
-        state.food[food_pos] = 1
-
-        # Occupy all cells except one
-        for i in range(len(base_cells) - 1):
-            state.units.append(Unit(Team.RED, base_cells[i + 1], base_cells[i + 1]))
-
+        red_unit = Unit(
+            Team.RED,
+            next(iter(red_base.cells)),
+            next(iter(red_base.cells)),
+            carrying_food=2,
+        )
+        state.units = [red_unit]
         tick_game(state)
+        assert len(state.units) == 3
+        assert red_unit.carrying_food == 0
 
-        # A new unit should be spawned at the only empty cell
-        # The empty cell should be the one closest to the food position
-        occupied_after = {unit.pos for unit in state.units}
-        assert len(state.units) == len(base_cells)
+    def test_unit_carrying_food_in_enemy_base_does_not_spawn_unit(self) -> None:
+        state = make_simple_game()
+        blue_base = state.get_base_region(Team.BLUE)
+        red_unit = Unit(
+            Team.RED,
+            next(iter(blue_base.cells)),
+            next(iter(blue_base.cells)),
+            carrying_food=1,
+        )
+        state.units = [red_unit]
+        tick_game(state)
+        assert state.units == [red_unit]
 
     def test_no_unit_spawned_when_base_full(self) -> None:
-        state = GameState()
-        state.units = []
+        state = make_simple_game()
 
         red_base = state.get_base_region(Team.RED)
         base_cells = list(red_base.cells)
@@ -597,26 +569,13 @@ class TestFoodSpawnsUnits:
         assert state.food.get(base_cells[0]) == 1
 
     def test_multiple_food_items_spawn_multiple_units(self) -> None:
-        state = GameState()
-        state.units = []
-
-        red_base = state.get_base_region(Team.RED)
-        base_cell = next(iter(red_base.cells))
-
-        # Place 3 food items
-        state.food[base_cell] = 3
+        red_unit = Unit(Team.RED, Pos(0, 0), Pos(0, 0), carrying_food=2)
+        state = make_simple_game(
+            red_base=Region(cells=frozenset({Pos(0, i) for i in range(3)})),
+            units=[red_unit],
+        )
 
         tick_game(state)
 
-        # First food spawns first unit
-        assert len(state.units) == 1
-        assert state.food.get(base_cell, 0) == 2
-
-        # Continue ticking to spawn more units
-        tick_game(state)
-        assert len(state.units) == 2
-        assert state.food.get(base_cell, 0) == 1
-
-        tick_game(state)
         assert len(state.units) == 3
-        assert base_cell not in state.food
+        assert red_unit.carrying_food == 0

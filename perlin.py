@@ -1,5 +1,6 @@
 import numpy as np
 
+
 def perlin(w: int, h: int, *, seed: int) -> np.ndarray:
     x, y = np.meshgrid(np.linspace(0, 1, w), np.linspace(0, 1, h))
     # permutation table
@@ -27,14 +28,18 @@ def perlin(w: int, h: int, *, seed: int) -> np.ndarray:
     return lerp(x1, x2, v)  # FIX2: I also had to reverse x1 and x2 here
 
 
-def lerp(a: np.typing.NDArray[np.float64], b: np.typing.NDArray[np.float64], x: np.typing.NDArray[np.float64]) -> np.typing.NDArray[np.float64]:
+def lerp(
+    a: np.typing.NDArray[np.float64],
+    b: np.typing.NDArray[np.float64],
+    x: np.typing.NDArray[np.float64],
+) -> np.typing.NDArray[np.float64]:
     """linear interpolation"""
     return a + x * (b - a)
 
 
 def fade(t: np.typing.NDArray[np.float64]) -> np.typing.NDArray[np.float64]:
     """6t^5 - 15t^4 + 10t^3"""
-    return 6 * t ** 5 - 15 * t ** 4 + 10 * t ** 3
+    return 6 * t**5 - 15 * t**4 + 10 * t**3
 
 
 def gradient(h: int, x: float, y: float) -> np.typing.NDArray[np.float64]:

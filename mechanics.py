@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 from abc import ABC, abstractmethod
+from collections import defaultdict
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Protocol, TypeVar, Generic, Callable, Any
@@ -19,6 +20,7 @@ GRID_SIZE = 32
 @dataclass
 class FoodConfig:
     """Configuration for Perlin noise-based food generation."""
+
     scale: float = 10.0
     max_prob: float = 0.0
     seed: int | None = None
@@ -68,6 +70,12 @@ Logbook = dict[Timestamp, dict[Pos, list[CellContents]]]
 class Order(ABC):
     """Base class for all orders that units can execute."""
 
+    @property
+    @abstractmethod
+    def description(self) -> str:
+        """The name of the order."""
+        ...
+
     @abstractmethod
     def is_complete(self, unit: "Unit") -> bool:
         """Check if this order has been completed."""
@@ -85,6 +93,10 @@ class Move(Order):
 
     target: Pos
 
+    @property
+    def description(self) -> str:
+        return f"move to ({self.target.x}, {self.target.y})"
+
     def is_complete(self, unit: "Unit") -> bool:
         return unit.pos == self.target
 
@@ -93,38 +105,43 @@ class Move(Order):
         if self.is_complete(unit):
             return
 
-        # Check if there's food at current position before moving
-        old_pos = unit.pos
-        food_count = state.food.get(old_pos, 0)
-        if food_count > 0:
-            # Remove food from current position
-            del state.food[old_pos]
-
-        dx = 0 if self.target.x == unit.pos.x else (1 if self.target.x > unit.pos.x else -1)
-        dy = 0 if self.target.y == unit.pos.y else (1 if self.target.y > unit.pos.y else -1)
+        dx = (
+            0
+            if self.target.x == unit.pos.x
+            else (1 if self.target.x > unit.pos.x else -1)
+        )
+        dy = (
+            0
+            if self.target.y == unit.pos.y
+            else (1 if self.target.y > unit.pos.y else -1)
+        )
 
         if dx != 0:
             unit.pos = Pos(unit.pos.x + dx, unit.pos.y)
         elif dy != 0:
             unit.pos = Pos(unit.pos.x, unit.pos.y + dy)
 
-        # If we picked up food, place it at new position
-        if food_count > 0:
-            state.food[unit.pos] = state.food.get(unit.pos, 0) + food_count
+        # If there's food at the new position, pick it up
+        unit.carrying_food += state.food.pop(unit.pos, 0)
 
 
-# TODO: I'm rusty on contra/covariance, but I worry that this is wrong.
-T = TypeVar('T', covariant=True)
+T_co = TypeVar("T_co", covariant=True)
+T_contra = TypeVar("T_contra", contravariant=True)
 
 
-class Condition(Protocol[T]):
+class Condition(Protocol[T_co]):
     """Protocol for conditions that can trigger interrupts.
 
     Returns T | None when evaluated - None means condition not met,
     otherwise returns data to pass to the interrupt action.
     """
 
-    def evaluate(self, unit: "Unit", observations: dict[Pos, list[CellContents]]) -> T | None:
+    @property
+    def description(self) -> str: ...
+
+    def evaluate(
+        self, unit: "Unit", observations: dict[Pos, list[CellContents]]
+    ) -> T_co | None:
         """Evaluate this condition. Returns data if condition is met, None otherwise."""
         ...
 
@@ -138,7 +155,13 @@ class EnemyInRangeCondition:
 
     distance: int
 
-    def evaluate(self, unit: "Unit", observations: dict[Pos, list[CellContents]]) -> Pos | None:
+    @property
+    def description(self) -> str:
+        return f"enemy within {self.distance}"
+
+    def evaluate(
+        self, unit: "Unit", observations: dict[Pos, list[CellContents]]
+    ) -> Pos | None:
         for pos, contents_list in observations.items():
             for contents in contents_list:
                 if isinstance(contents, UnitPresent) and contents.team != unit.team:
@@ -154,7 +177,13 @@ class BaseVisibleCondition:
     Returns the position of the first base cell found.
     """
 
-    def evaluate(self, unit: "Unit", observations: dict[Pos, list[CellContents]]) -> Pos | None:
+    @property
+    def description(self) -> str:
+        return "base visible"
+
+    def evaluate(
+        self, unit: "Unit", observations: dict[Pos, list[CellContents]]
+    ) -> Pos | None:
         for pos, contents_list in observations.items():
             for contents in contents_list:
                 if isinstance(contents, BasePresent) and contents.team == unit.team:
@@ -171,51 +200,81 @@ class PositionReachedCondition:
 
     position: Pos
 
-    def evaluate(self, unit: "Unit", observations: dict[Pos, list[CellContents]]) -> Pos | None:
+    @property
+    def description(self) -> str:
+        return f"reached ({self.position.x}, {self.position.y})"
+
+    def evaluate(
+        self, unit: "Unit", observations: dict[Pos, list[CellContents]]
+    ) -> Pos | None:
         if unit.pos == self.position:
             return self.position
         return None
 
 
 @dataclass(frozen=True)
-class FoodInRange:
+class FoodInRangeCondition:
     """Condition: food is visible within range.
 
     Returns the position of the nearest food found, or None if no food is visible.
     """
 
-    def evaluate(self, unit: "Unit", observations: dict[Pos, list[CellContents]]) -> Pos | None:
-        nearest_food_pos: Pos | None = None
-        nearest_distance: int | None = None
+    distance: int
 
-        for pos, contents_list in observations.items():
-            for contents in contents_list:
-                if isinstance(contents, FoodPresent):
-                    distance = unit.pos.manhattan_distance(pos)
-                    if nearest_distance is None or distance < nearest_distance:
-                        nearest_distance = distance
-                        nearest_food_pos = pos
+    @property
+    def description(self) -> str:
+        return f"food within {self.distance}"
 
-        return nearest_food_pos
+    def evaluate(
+        self, unit: "Unit", observations: dict[Pos, list[CellContents]]
+    ) -> Pos | None:
+        food_posns = [
+            pos
+            for pos, contents_list in observations.items()
+            if 0 < pos.manhattan_distance(unit.pos) <= self.distance
+            and any(isinstance(x, FoodPresent) for x in contents_list)
+        ]
+        if not food_posns:
+            return None
+        return min(food_posns, key=lambda pos: unit.pos.manhattan_distance(pos))
 
 
-@dataclass
-class Action(Generic[T]):
+@dataclass(frozen=True)
+class Action(Protocol[T_contra]):
     """A named, inspectable action that generates orders based on input data.
 
     The generic parameter T represents the type of data this action expects.
     Actions are typically paired with Conditions that produce matching T values.
     """
 
-    name: str
-    execute: Callable[[T], list[Order]]
+    @property
+    def description(self) -> str:
+        """The name of the action."""
+        ...
 
-    def __str__(self) -> str:
-        return self.name
+    def execute(self, unit: "Unit", data: T_contra) -> list[Order]:
+        """Figure out what orders the unit should follow."""
+        ...
 
 
-@dataclass
-class Interrupt(Generic[T]):
+@dataclass(frozen=True)
+class MoveThereAction:
+    description = "move there"
+
+    def execute(self, unit: "Unit", data: Pos) -> list[Order]:
+        return [Move(target=data)]
+
+
+@dataclass(frozen=True)
+class MoveHomeAction:
+    description = "move home"
+
+    def execute(self, unit: "Unit", data: Any) -> list[Order]:
+        return [Move(target=unit.home_pos())]
+
+
+@dataclass(frozen=True)
+class Interrupt(Generic[T_co]):
     """An interrupt handler that can preempt a plan when a condition is met.
 
     When the condition evaluates to a non-None value, that value is passed
@@ -233,11 +292,11 @@ class Interrupt(Generic[T]):
       pairs at construction) with flexibility (storing mixed interrupt types).
     """
 
-    condition: Condition[T]
-    action: Action[T]
+    condition: Condition[T_co]
+    actions: list[Action[T_co]]
 
     def __str__(self) -> str:
-        return f"when {self.condition}, do {self.action}"
+        return f"when {self.condition}: [{'; '.join([action.description for action in self.actions])}]"
 
 
 @dataclass
@@ -261,7 +320,12 @@ class Plan:
         self.orders = list(action)
 
 
-def _generate_random_base(seed_pos: Pos, target_size: int = 12, grid_width: int = GRID_SIZE, grid_height: int = GRID_SIZE) -> Region:
+def _generate_random_base(
+    seed_pos: Pos,
+    target_size: int,
+    grid_width: int = GRID_SIZE,
+    grid_height: int = GRID_SIZE,
+) -> Region:
     """Generate a random base region by growing from a seed position.
 
     Args:
@@ -287,9 +351,11 @@ def _generate_random_base(seed_pos: Pos, target_size: int = 12, grid_width: int 
             ]
             for neighbor in neighbors:
                 # Check if neighbor is on the grid and not already in the base
-                if (0 <= neighbor.x < grid_width and
-                    0 <= neighbor.y < grid_height and
-                    neighbor not in cells):
+                if (
+                    0 <= neighbor.x < grid_width
+                    and 0 <= neighbor.y < grid_height
+                    and neighbor not in cells
+                ):
                     candidates.add(neighbor)
 
         if not candidates:
@@ -303,7 +369,9 @@ def _generate_random_base(seed_pos: Pos, target_size: int = 12, grid_width: int 
     return Region(frozenset(cells))
 
 
-def _generate_food(config: FoodConfig, grid_width: int = GRID_SIZE, grid_height: int = GRID_SIZE) -> dict[Pos, int]:
+def _generate_food(
+    config: FoodConfig, grid_width: int = GRID_SIZE, grid_height: int = GRID_SIZE
+) -> dict[Pos, int]:
     """Generate food locations using Perlin noise with Poisson-distributed counts.
 
     Args:
@@ -315,7 +383,11 @@ def _generate_food(config: FoodConfig, grid_width: int = GRID_SIZE, grid_height:
         A dict mapping Pos to food count at that position
     """
 
-    noise = perlin(grid_width, grid_height, seed=config.seed if config.seed is not None else random.randint(0, 1000000))
+    noise = perlin(
+        grid_width,
+        grid_height,
+        seed=config.seed if config.seed is not None else random.randint(0, 1000000),
+    )
 
     # Perlin noise returns values in range [-1, 1], normalize to [0, 1]
     normalized_value = (noise + 1) / 2
@@ -345,6 +417,7 @@ class Unit:
     logbook: Logbook = field(default_factory=dict)
     last_sync_tick: Timestamp = 0
     visibility_radius: int = 5
+    carrying_food: int = 0
 
     def home_pos(self) -> Pos:
         """Get this unit's original spawn position (for returning home)."""
@@ -355,68 +428,69 @@ class Unit:
         return state.get_base_region(self.team).contains(self.pos)
 
 
+def make_game(
+    *,
+    grid_width: int = GRID_SIZE,
+    grid_height: int = GRID_SIZE,
+    init_base_size: int = 5,
+    food_config: FoodConfig = FoodConfig(),
+) -> GameState:
+    red_base_seed = Pos(
+        random.randint(0, grid_width // 2 - 1), random.randint(0, grid_height - 1)
+    )
+    blue_base_seed = Pos(
+        random.randint(grid_width // 2, grid_width - 1),
+        random.randint(0, grid_height - 1),
+    )
+    red_base = _generate_random_base(
+        red_base_seed,
+        target_size=init_base_size,
+        grid_width=grid_width,
+        grid_height=grid_height,
+    )
+    blue_base = _generate_random_base(
+        blue_base_seed,
+        target_size=init_base_size,
+        grid_width=grid_width,
+        grid_height=grid_height,
+    )
+
+    units = [
+        *[Unit(Team.RED, pos, pos) for pos in random.sample(list(red_base.cells), 3)],
+        *[Unit(Team.BLUE, pos, pos) for pos in random.sample(list(blue_base.cells), 3)],
+    ]
+    return GameState(
+        grid_width=grid_width,
+        grid_height=grid_height,
+        base_regions={Team.RED: red_base, Team.BLUE: blue_base},
+        units=units,
+        food=_generate_food(
+            food_config, grid_width=grid_width, grid_height=grid_height
+        ),
+    )
+
+
+@dataclass
+class View:
+    freeze_frame: Timestamp | None = None
+    selected_unit: Unit | None = None
+    working_plan: Plan | None = None
+    logbook: Logbook = field(default_factory=lambda: defaultdict(dict))
+
 @dataclass
 class GameState:
+    grid_width: int
+    grid_height: int
+    base_regions: dict[Team, Region]
+
     tick: Timestamp = 0
     units: list[Unit] = field(default_factory=list)
-    selected_unit: Unit | None = None
-    # Plan being constructed for the selected unit
-    working_plan: Plan | None = None
-    # Base regions for each team (generated randomly at game start)
-    base_regions: dict[Team, Region] = field(default_factory=dict)
-    # Each team's home base logbook
-    base_logbooks: dict[Team, Logbook] = field(default_factory=dict)
-    # Slider positions for each team's view (which tick they're viewing)
-    view_tick: dict[Team, Timestamp] = field(default_factory=dict)
-    # Whether each player's view auto-advances to current tick
-    view_live: dict[Team, bool] = field(default_factory=dict)
-    # Grid dimensions
-    grid_width: int = GRID_SIZE
-    grid_height: int = GRID_SIZE
-    # Food locations on the grid with counts
+    views: dict[Team, View] = field(default_factory=dict)
     food: dict[Pos, int] = field(default_factory=dict)
-    # Configuration for food generation
-    food_config: FoodConfig = field(default_factory=FoodConfig)
 
     def __post_init__(self) -> None:
-        # Generate random base regions
-        # RED starts on left half, BLUE on right half to keep them separated
-        red_seed = Pos(
-            random.randint(0, self.grid_width // 2 - 1),
-            random.randint(0, self.grid_height - 1)
-        )
-        blue_seed = Pos(
-            random.randint(self.grid_width // 2, self.grid_width - 1),
-            random.randint(0, self.grid_height - 1)
-        )
-
-        self.base_regions[Team.RED] = _generate_random_base(red_seed, target_size=12, grid_width=self.grid_width, grid_height=self.grid_height)
-        self.base_regions[Team.BLUE] = _generate_random_base(blue_seed, target_size=12, grid_width=self.grid_width, grid_height=self.grid_height)
-
-        # Spawn 3 units at random positions within each base
-        red_cells = list(self.base_regions[Team.RED].cells)
-        blue_cells = list(self.base_regions[Team.BLUE].cells)
-
-        red_spawns = random.sample(red_cells, 3)
-        blue_spawns = random.sample(blue_cells, 3)
-
-        for spawn_pos in red_spawns:
-            self.units.append(Unit(Team.RED, spawn_pos, spawn_pos))
-        for spawn_pos in blue_spawns:
-            self.units.append(Unit(Team.BLUE, spawn_pos, spawn_pos))
-
-        self.base_logbooks[Team.RED] = {}
-        self.base_logbooks[Team.BLUE] = {}
-        self.view_tick[Team.RED] = 0
-        self.view_tick[Team.BLUE] = 0
-        self.view_live[Team.RED] = True
-        self.view_live[Team.BLUE] = True
-
-        # Generate food using Perlin noise
-        self.food = _generate_food(self.food_config, self.grid_width, self.grid_height)
-
-        # Record initial observations from base regions
-        self._record_observations_from_bases()
+        for team in [Team.RED, Team.BLUE]:
+            self.views.setdefault(team, View())
 
     def get_base_region(self, team: Team) -> Region:
         """Get a team's base region."""
@@ -436,15 +510,17 @@ class GameState:
             # Add observations from units currently in the base
             for unit in self.units:
                 if unit.team == team and unit.is_near_base(self):
-                    unit_observations = self._observe_from_position(unit.pos, unit.visibility_radius)
+                    unit_observations = self._observe_from_position(
+                        unit.pos, unit.visibility_radius
+                    )
                     observations.update(unit_observations)
 
             if observations:
-                if self.tick not in self.base_logbooks[team]:
-                    self.base_logbooks[team][self.tick] = {}
-                self.base_logbooks[team][self.tick].update(observations)
+                self.views[team].logbook[self.tick].update(observations)
 
-    def _observe_from_position(self, observer_pos: Pos, visibility_radius: int) -> dict[Pos, list[CellContents]]:
+    def _observe_from_position(
+        self, observer_pos: Pos, visibility_radius: int
+    ) -> dict[Pos, list[CellContents]]:
         """Return what can be observed from a given position."""
         observations: dict[Pos, list[CellContents]] = {}
 
@@ -496,7 +572,7 @@ class GameState:
 
     def _merge_logbook_to_base(self, unit: Unit) -> None:
         """Merge a unit's logbook into the team's base logbook."""
-        base_logbook = self.base_logbooks[unit.team]
+        base_logbook = self.views[unit.team].logbook
         for timestamp, observations in unit.logbook.items():
             if timestamp not in base_logbook:
                 base_logbook[timestamp] = {}
@@ -525,7 +601,9 @@ def tick_game(state: GameState) -> None:
             result = interrupt.condition.evaluate(unit, observations)
             if result is not None:
                 # First matching interrupt triggers: call action with result and replace order queue
-                new_orders = interrupt.action.execute(result)
+                new_orders = sum(
+                    [action.execute(unit, result) for action in interrupt.actions], []
+                )
                 unit.plan.interrupt_with(new_orders)
                 break  # Only first matching interrupt per tick
 
@@ -560,32 +638,31 @@ def tick_game(state: GameState) -> None:
                 units_to_remove.extend(units_at_pos)
 
     state.units = [u for u in state.units if u not in units_to_remove]
+    for u in units_to_remove:
+        if u.carrying_food > 0:
+            state.food.setdefault(u.pos, 0)
+            state.food[u.pos] += u.carrying_food
 
     # 3.75. Process food at bases to spawn new units
     for team in [Team.RED, Team.BLUE]:
         base_region = state.get_base_region(team)
-
-        # Find food in the base
-        food_positions = [pos for pos in state.food.keys() if base_region.contains(pos)]
-
-        for food_pos in food_positions:
-            # Find unoccupied cells in the base
-            occupied_positions = {unit.pos for unit in state.units}
-            unoccupied_cells = [cell for cell in base_region.cells if cell not in occupied_positions]
-
-            if unoccupied_cells:
-                # Find closest unoccupied cell to the food
-                closest_cell = min(unoccupied_cells, key=lambda cell: food_pos.manhattan_distance(cell))
-
-                # Spawn a new unit at the closest unoccupied cell
-                new_unit = Unit(team=team, pos=closest_cell, original_pos=closest_cell)
-                state.units.append(new_unit)
-
-                # Remove one food item (or all if we want to spawn multiple units per food count)
-                # Based on the requirement "a new unit is created", I'll spawn one unit per food item
-                state.food[food_pos] -= 1
-                if state.food[food_pos] == 0:
-                    del state.food[food_pos]
+        unoccupied_cells = [
+            cell
+            for cell in base_region.cells
+            if cell not in {unit.pos for unit in state.units}
+        ]
+        for u in state.units:
+            if u.team == team and base_region.contains(u.pos):
+                while unoccupied_cells and u.carrying_food > 0:
+                    closest_cell = min(
+                        unoccupied_cells,
+                        key=lambda cell: u.pos.manhattan_distance(cell),
+                    )
+                    state.units.append(
+                        Unit(team=u.team, pos=closest_cell, original_pos=closest_cell)
+                    )
+                    unoccupied_cells.remove(closest_cell)
+                    u.carrying_food -= 1
 
     # 4. Sync units that are at base
     for unit in state.units:
