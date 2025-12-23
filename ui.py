@@ -189,7 +189,10 @@ def draw_player_view(
                     if contents.team not in drawn_bases:
                         draw_base(surface, state.get_base_region(contents.team), contents.team, offset_x, offset_y)
                         drawn_bases.add(contents.team)
-        # Second pass: draw units on top
+        # Second pass: draw food in visible areas
+        visible_food = state.food & observations.keys()
+        draw_food(surface, visible_food, offset_x, offset_y)
+        # Third pass: draw units on top
         for pos, contents_list in observations.items():
             for contents in contents_list:
                 if isinstance(contents, UnitPresent):
