@@ -5,6 +5,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Protocol
+import random
 
 from core import Timestamp, Pos, Region
 
@@ -161,20 +162,44 @@ class Plan:
         self.orders = list(action)
 
 
-def get_base_region(team: Team) -> Region:
-    """Get the base region for a team."""
-    if team == Team.RED:
-        center = Pos(2, GRID_SIZE // 2)
-    else:
-        center = Pos(GRID_SIZE - 3, GRID_SIZE // 2)
+def _generate_random_base(seed_pos: Pos, target_size: int = 12) -> Region:
+    """Generate a random base region by growing from a seed position.
 
-    # Create a 5x5 square centered on the position
-    cells = frozenset(
-        Pos(x, y)
-        for x in range(center.x - 2, center.x + 3)
-        for y in range(center.y - 2, center.y + 3)
-    )
-    return Region(cells)
+    Args:
+        seed_pos: Starting position for the base
+        target_size: Number of cells in the final base (default: 12)
+
+    Returns:
+        A Region containing exactly target_size cells
+    """
+    cells = {seed_pos}
+
+    while len(cells) < target_size:
+        # Get all cells that are neighbors of current base cells
+        candidates = set()
+        for cell in cells:
+            neighbors = [
+                Pos(cell.x + 1, cell.y),
+                Pos(cell.x - 1, cell.y),
+                Pos(cell.x, cell.y + 1),
+                Pos(cell.x, cell.y - 1),
+            ]
+            for neighbor in neighbors:
+                # Check if neighbor is on the grid and not already in the base
+                if (0 <= neighbor.x < GRID_SIZE and
+                    0 <= neighbor.y < GRID_SIZE and
+                    neighbor not in cells):
+                    candidates.add(neighbor)
+
+        if not candidates:
+            # Should never happen with reasonable target_size and grid size
+            break
+
+        # Pick a random candidate and add it to the base
+        new_cell = random.choice(list(candidates))
+        cells.add(new_cell)
+
+    return Region(frozenset(cells))
 
 
 @dataclass
@@ -187,17 +212,13 @@ class Unit:
     logbook: Logbook = field(default_factory=dict)
     last_sync_tick: Timestamp = 0
 
-    def home_base_region(self) -> Region:
-        """Get this unit's home base region."""
-        return get_base_region(self.team)
-
     def home_pos(self) -> Pos:
         """Get this unit's original spawn position (for returning home)."""
         return self.original_pos
 
-    def is_near_base(self) -> bool:
+    def is_near_base(self, state: "GameState") -> bool:
         """Check if unit is inside its home base region."""
-        return self.home_base_region().contains(self.pos)
+        return state.get_base_region(self.team).contains(self.pos)
 
 
 @dataclass
@@ -207,6 +228,8 @@ class GameState:
     selected_unit: Unit | None = None
     # Plan being constructed for the selected unit
     working_plan: Plan | None = None
+    # Base regions for each team (generated randomly at game start)
+    base_regions: dict[Team, Region] = field(default_factory=dict)
     # Each team's home base logbook
     base_logbooks: dict[Team, Logbook] = field(default_factory=dict)
     # Slider positions for each team's view (which tick they're viewing)
@@ -215,21 +238,31 @@ class GameState:
     view_live: dict[Team, bool] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        red_region = get_base_region(Team.RED)
-        blue_region = get_base_region(Team.BLUE)
+        # Generate random base regions
+        # RED starts on left half, BLUE on right half to keep them separated
+        red_seed = Pos(
+            random.randint(0, GRID_SIZE // 2 - 1),
+            random.randint(0, GRID_SIZE - 1)
+        )
+        blue_seed = Pos(
+            random.randint(GRID_SIZE // 2, GRID_SIZE - 1),
+            random.randint(0, GRID_SIZE - 1)
+        )
 
-        # Get center positions from regions for spawning
-        red_cells = list(red_region.cells)
-        blue_cells = list(blue_region.cells)
-        red_center = Pos(2, GRID_SIZE // 2)
-        blue_center = Pos(GRID_SIZE - 3, GRID_SIZE // 2)
+        self.base_regions[Team.RED] = _generate_random_base(red_seed, target_size=12)
+        self.base_regions[Team.BLUE] = _generate_random_base(blue_seed, target_size=12)
 
-        # Spawn 3 units inside each base
-        for i in range(3):
-            red_spawn = Pos(red_center.x, red_center.y - 1 + i)
-            blue_spawn = Pos(blue_center.x, blue_center.y - 1 + i)
-            self.units.append(Unit(Team.RED, red_spawn, red_spawn))
-            self.units.append(Unit(Team.BLUE, blue_spawn, blue_spawn))
+        # Spawn 3 units at random positions within each base
+        red_cells = list(self.base_regions[Team.RED].cells)
+        blue_cells = list(self.base_regions[Team.BLUE].cells)
+
+        red_spawns = random.sample(red_cells, 3)
+        blue_spawns = random.sample(blue_cells, 3)
+
+        for spawn_pos in red_spawns:
+            self.units.append(Unit(Team.RED, spawn_pos, spawn_pos))
+        for spawn_pos in blue_spawns:
+            self.units.append(Unit(Team.BLUE, spawn_pos, spawn_pos))
 
         self.base_logbooks[Team.RED] = {}
         self.base_logbooks[Team.BLUE] = {}
@@ -243,7 +276,7 @@ class GameState:
 
     def get_base_region(self, team: Team) -> Region:
         """Get a team's base region."""
-        return get_base_region(team)
+        return self.base_regions[team]
 
     def get_base_pos(self, team: Team) -> Pos:
         """Get a position in the team's base (deprecated, for backward compatibility)."""
@@ -353,7 +386,7 @@ def tick_game(state: GameState) -> None:
 
     # 4. Sync units that are at base
     for unit in state.units:
-        if unit.is_near_base():
+        if unit.is_near_base(state):
             state._merge_logbook_to_base(unit)
 
     state.tick += 1
