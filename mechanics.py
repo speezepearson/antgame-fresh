@@ -628,7 +628,6 @@ def tick_game(state: GameState) -> None:
                 # Multiple teams at same position - mutual annihilation
                 units_to_remove.update([unit.id for unit in units_at_pos])
 
-    print("remove", units_to_remove)
     state.kill_units(*units_to_remove)
 
     # 3.75. Process food at bases to spawn new units
