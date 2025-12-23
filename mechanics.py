@@ -319,24 +319,28 @@ def _generate_food(config: FoodConfig, grid_width: int = GRID_SIZE, grid_height:
     """
     # Set random seed if provided
     seed = config.seed if config.seed is not None else random.randint(0, 1000000)
-    if config.seed is not None:
-        np.random.seed(config.seed)
+    np.random.seed(seed)
+
+    # Generate a random offset to vary the noise pattern based on seed
+    # This avoids using the buggy 'base' parameter which causes crashes
+    offset_x = np.random.uniform(0, 10000)
+    offset_y = np.random.uniform(0, 10000)
 
     food_counts: dict[Pos, int] = {}
 
     for x in range(grid_width):
         for y in range(grid_height):
             # Generate Perlin noise value for this position
-            # Normalize coordinates by scale
+            # Normalize coordinates by scale and add random offset for variation
             noise_value = noise.pnoise2(
-                x / config.scale,
-                y / config.scale,
+                (x + offset_x) / config.scale,
+                (y + offset_y) / config.scale,
                 octaves=config.octaves,
                 persistence=config.persistence,
                 lacunarity=config.lacunarity,
                 repeatx=grid_width * 10,  # Large repeat to avoid tiling
                 repeaty=grid_height * 10,
-                base=seed,
+                base=0,  # Use fixed base=0 to avoid C extension bugs
             )
 
             # Perlin noise returns values in range [-1, 1], normalize to [0, 1]
