@@ -531,6 +531,12 @@ class GameState:
                 self.food.setdefault(unit.pos, 0)
                 self.food[unit.pos] += unit.carrying_food
 
+    def set_unit_plan(self, unit_id: UnitId, plan: Plan) -> None:
+        unit = self.units[unit_id]
+        if not unit.is_in_base(self):
+            raise ValueError(f"Unit {unit_id} is not in base")
+        unit.plan = plan
+
     def observe_from_position(
         self, observer_pos: Pos, visibility_radius: int
     ) -> dict[Pos, list[CellContents]]:
@@ -628,11 +634,10 @@ def tick_game(state: GameState) -> None:
                 # Multiple teams at same position - mutual annihilation
                 units_to_remove.update([unit.id for unit in units_at_pos])
 
-    print("remove", units_to_remove)
     state.kill_units(*units_to_remove)
 
     # 3.75. Process food at bases to spawn new units
-    for team in [Team.RED, Team.BLUE]:
+    for team in Team:
         base_region = state.get_base_region(team)
         unoccupied_cells = [
             cell

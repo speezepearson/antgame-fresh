@@ -27,6 +27,7 @@ from mechanics import (
     make_game,
     tick_game,
     Unit,
+    UnitId,
     Order,
     Condition,
     Action,
@@ -43,11 +44,50 @@ TILE_SIZE = 16
 
 
 @dataclass
+class TickControls:
+    """UI controls for time navigation."""
+    slider: pygame_gui.elements.UIHorizontalSlider
+    tick_label: pygame_gui.elements.UILabel
+    live_btn: pygame_gui.elements.UIButton
+
+
+@dataclass
+class PlanControls:
+    """UI controls for plan editing."""
+    text_box: pygame_gui.elements.UITextBox
+    last_plan_html: str
+    issue_plan_btn: pygame_gui.elements.UIButton
+    clear_plan_btn: pygame_gui.elements.UIButton
+    selection_label: pygame_gui.elements.UILabel
+
+
+@dataclass
 class PlayerView:
     knowledge: PlayerKnowledge
+    tick_controls: TickControls
+    plan_controls: PlanControls | None = None
     freeze_frame: Timestamp | None = None
-    selected_unit: Unit | None = None
+    selected_unit_id: UnitId | None = None
     working_plan: Plan | None = None
+
+
+@dataclass
+class GameContext:
+    """Container for all game state and UI elements."""
+    state: GameState
+    screen: pygame.Surface
+    ui_manager: pygame_gui.UIManager
+    clock: pygame.time.Clock
+    views: dict[Team, PlayerView]
+    team_offsets: dict[Team, int]
+    red_offset_x: int
+    god_offset_x: int
+    blue_offset_x: int
+    views_offset_y: int
+    slider_y: int
+    map_pixel_size: int
+    tick_interval: int
+    last_tick: int
 
 
 def format_plan(plan: Plan, unit: Unit) -> list[str]:
@@ -201,53 +241,39 @@ def draw_food(
                 )
 
 
-def god_knowledge(game: GameState) -> PlayerKnowledge:
-    observations = game.observe_from_position(
-        Pos(0, 0), (game.grid_width + game.grid_height)
-    )
-    return PlayerKnowledge(
-        team=Team.RED,  # TODO: asymmetric
-        grid_width=game.grid_width,
-        grid_height=game.grid_height,
-        tick=game.tick,
-        all_observations={game.tick: observations},
-        last_observations={
-            pos: (game.tick, contents_list)
-            for pos, contents_list in observations.items()
-        },
-    )
-
-
 def draw_god_view(
     surface: pygame.Surface,
     state: GameState,
     offset_x: int,
     offset_y: int,
 ) -> None:
+    """Draw the god's-eye view showing the complete game state."""
     map_pixel_width = state.grid_width * TILE_SIZE
     map_pixel_height = state.grid_height * TILE_SIZE
     bg_rect = pygame.Rect(offset_x, offset_y, map_pixel_width, map_pixel_height)
     pygame.draw.rect(surface, (30, 30, 30), bg_rect)
 
-    knowledge = god_knowledge(state)
-    # breakpoint()
-    draw_player_view(surface, PlayerView(knowledge), Team.RED, offset_x, offset_y)
+    # Draw grid
+    draw_grid(surface, offset_x, offset_y, state.grid_width, state.grid_height)
 
-    # draw_grid(surface, offset_x, offset_y, state.grid_width, state.grid_height)
-    # draw_base_cell(surface, state.get_base_region(Team.RED), Team.RED, offset_x, offset_y)
-    # draw_base_cell(surface, state.get_base_region(Team.BLUE), Team.BLUE, offset_x, offset_y)
+    # Draw base regions
+    for pos in state.get_base_region(Team.RED).cells:
+        draw_base_cell(surface, pos, Team.RED, offset_x, offset_y)
+    for pos in state.get_base_region(Team.BLUE).cells:
+        draw_base_cell(surface, pos, Team.BLUE, offset_x, offset_y)
 
-    # # Draw food
-    # draw_food(surface, state.food, offset_x, offset_y)
+    # Draw food
+    draw_food(surface, state.food, offset_x, offset_y)
 
-    # for unit in state.units:
-    #     draw_unit_at(
-    #         surface,
-    #         unit.team,
-    #         unit.pos,
-    #         offset_x,
-    #         offset_y,
-    #     )
+    # Draw units
+    for unit in state.units.values():
+        draw_unit_at(
+            surface,
+            unit.team,
+            unit.pos,
+            offset_x,
+            offset_y,
+        )
 
 
 def draw_player_view(
@@ -412,7 +438,8 @@ def make_default_interrupts() -> list[Interrupt[Any]]:
     ]
 
 
-def main() -> None:
+def initialize_game() -> GameContext:
+    """Parse arguments and initialize game state, pygame, and UI elements."""
     # Parse command-line arguments
     parser = argparse.ArgumentParser(description="Ant RTS Game")
     parser.add_argument(
@@ -483,55 +510,51 @@ def main() -> None:
     slider_y = views_offset_y + map_pixel_size + 5
     slider_width = map_pixel_size - 100
 
-    # Create time sliders for each team
-    red_slider = pygame_gui.elements.UIHorizontalSlider(
-        relative_rect=pygame.Rect(red_offset_x, slider_y, slider_width, 20),
-        start_value=0.0,
-        value_range=(0.0, 1.0),
-        manager=ui_manager,
-    )
-    red_tick_label = pygame_gui.elements.UILabel(
-        relative_rect=pygame.Rect(red_offset_x + slider_width + 5, slider_y, 45, 20),
-        text="t=0",
-        manager=ui_manager,
-    )
-    red_live_btn = pygame_gui.elements.UIButton(
-        relative_rect=pygame.Rect(red_offset_x + slider_width + 50, slider_y, 50, 20),
-        text="LIVE",
-        manager=ui_manager,
+    # Map teams to their view offsets
+    team_offsets = {
+        Team.RED: red_offset_x,
+        Team.BLUE: blue_offset_x,
+    }
+
+    # Create time sliders for RED team
+    red_tick_controls = TickControls(
+        slider=pygame_gui.elements.UIHorizontalSlider(
+            relative_rect=pygame.Rect(red_offset_x, slider_y, slider_width, 20),
+            start_value=0.0,
+            value_range=(0.0, 1.0),
+            manager=ui_manager,
+        ),
+        tick_label=pygame_gui.elements.UILabel(
+            relative_rect=pygame.Rect(red_offset_x + slider_width + 5, slider_y, 45, 20),
+            text="t=0",
+            manager=ui_manager,
+        ),
+        live_btn=pygame_gui.elements.UIButton(
+            relative_rect=pygame.Rect(red_offset_x + slider_width + 50, slider_y, 50, 20),
+            text="LIVE",
+            manager=ui_manager,
+        ),
     )
 
-    blue_slider = pygame_gui.elements.UIHorizontalSlider(
-        relative_rect=pygame.Rect(blue_offset_x, slider_y, slider_width, 20),
-        start_value=0.0,
-        value_range=(0.0, 1.0),
-        manager=ui_manager,
+    # Create time sliders for BLUE team
+    blue_tick_controls = TickControls(
+        slider=pygame_gui.elements.UIHorizontalSlider(
+            relative_rect=pygame.Rect(blue_offset_x, slider_y, slider_width, 20),
+            start_value=0.0,
+            value_range=(0.0, 1.0),
+            manager=ui_manager,
+        ),
+        tick_label=pygame_gui.elements.UILabel(
+            relative_rect=pygame.Rect(blue_offset_x + slider_width + 5, slider_y, 45, 20),
+            text="t=0",
+            manager=ui_manager,
+        ),
+        live_btn=pygame_gui.elements.UIButton(
+            relative_rect=pygame.Rect(blue_offset_x + slider_width + 50, slider_y, 50, 20),
+            text="LIVE",
+            manager=ui_manager,
+        ),
     )
-    blue_tick_label = pygame_gui.elements.UILabel(
-        relative_rect=pygame.Rect(blue_offset_x + slider_width + 5, slider_y, 45, 20),
-        text="t=0",
-        manager=ui_manager,
-    )
-    blue_live_btn = pygame_gui.elements.UIButton(
-        relative_rect=pygame.Rect(blue_offset_x + slider_width + 50, slider_y, 50, 20),
-        text="LIVE",
-        manager=ui_manager,
-    )
-
-    # Selection indicator label (hidden when no selection)
-    selection_label = pygame_gui.elements.UILabel(
-        relative_rect=pygame.Rect(god_offset_x, slider_y, map_pixel_size, 20),
-        text="",
-        manager=ui_manager,
-    )
-    selection_label.hide()  # type: ignore[no-untyped-call]
-
-    # Plan text box and buttons (created dynamically per-team)
-    plan_text_box: pygame_gui.elements.UITextBox | None = None
-    last_plan_html: str | None = None
-    issue_plan_btn: pygame_gui.elements.UIButton | None = None
-    clear_plan_btn: pygame_gui.elements.UIButton | None = None
-    plan_buttons_team: Team | None = None  # Track which team the buttons are for
 
     tick_interval = 200
     last_tick = pygame.time.get_ticks()
@@ -542,7 +565,8 @@ def main() -> None:
             grid_width=args.width,
             grid_height=args.height,
             tick=state.tick,
-        )
+        ),
+        tick_controls=red_tick_controls,
     )
     blue_view = PlayerView(
         knowledge=PlayerKnowledge(
@@ -550,282 +574,279 @@ def main() -> None:
             grid_width=args.width,
             grid_height=args.height,
             tick=state.tick,
-        )
+        ),
+        tick_controls=blue_tick_controls,
     )
     views = {
         Team.RED: red_view,
         Team.BLUE: blue_view,
     }
 
-    running = True
-    while running:
-        current_time = pygame.time.get_ticks()
-        time_delta = clock.tick(60) / 1000.0
+    return GameContext(
+        state=state,
+        screen=screen,
+        ui_manager=ui_manager,
+        clock=clock,
+        views=views,
+        team_offsets=team_offsets,
+        red_offset_x=red_offset_x,
+        god_offset_x=god_offset_x,
+        blue_offset_x=blue_offset_x,
+        views_offset_y=views_offset_y,
+        slider_y=slider_y,
+        map_pixel_size=map_pixel_size,
+        tick_interval=tick_interval,
+        last_tick=last_tick,
+    )
 
-        for event in pygame.event.get():
-            # Process pygame_gui events
-            ui_manager.process_events(event)
 
-            if event.type == pygame.QUIT:
-                running = False
+def handle_events(ctx: GameContext) -> bool:
+    """Process pygame events. Returns True if game should continue running."""
+    for event in pygame.event.get():
+        # Process pygame_gui events
+        if ctx.ui_manager.process_events(event):
+            continue
+
+        if event.type == pygame.QUIT:
+            return False
+
+        for team in Team:
+            view = ctx.views[team]
 
             # Handle pygame_gui button clicks
-            elif event.type == pygame_gui.UI_BUTTON_PRESSED:
-                if event.ui_element == red_live_btn:
-                    views[Team.RED].freeze_frame = None
-                elif event.ui_element == blue_live_btn:
-                    views[Team.BLUE].freeze_frame = None
-                elif event.ui_element == issue_plan_btn:
-                    # Issue plan for the active team
-                    for team in [Team.RED, Team.BLUE]:
-                        view = views[team]
+            if event.type == pygame_gui.UI_BUTTON_PRESSED:
+                # Handle plan control buttons
+                if event.ui_element == view.tick_controls.live_btn:
+                    view.freeze_frame = None
+                if view.plan_controls is not None:
+                    if event.ui_element == view.plan_controls.issue_plan_btn:
+                        # Issue plan for this team
                         if (
                             view.working_plan is not None
                             and view.working_plan.orders
-                            and view.selected_unit is not None
+                            and view.selected_unit_id is not None
                         ):
-                            view.selected_unit.plan = view.working_plan
-                            view.selected_unit = None
+                            ctx.state.set_unit_plan(view.selected_unit_id, view.working_plan)
+                            view.selected_unit_id = None
                             view.working_plan = None
-                            break
-                elif event.ui_element == clear_plan_btn:
-                    # Clear plan for the active team
-                    for team in [Team.RED, Team.BLUE]:
-                        view = views[team]
-                        if view.selected_unit is not None:
+                            # Clean up plan controls
+                            view.plan_controls.text_box.kill()
+                            view.plan_controls.issue_plan_btn.kill()  # type: ignore[no-untyped-call]
+                            view.plan_controls.clear_plan_btn.kill()  # type: ignore[no-untyped-call]
+                            view.plan_controls.selection_label.hide()  # type: ignore[no-untyped-call]
+                            view.plan_controls = None
+                        break
+                    elif event.ui_element == view.plan_controls.clear_plan_btn:
+                        # Clear plan for this team
+                        if view.selected_unit_id is not None:
                             view.working_plan = Plan(
                                 interrupts=make_default_interrupts()
                             )
-                            break
+                        break
 
             # Handle slider value changes
             elif event.type == pygame_gui.UI_HORIZONTAL_SLIDER_MOVED:
-                if event.ui_element == red_slider:
-                    if state.tick > 0:
-                        views[Team.RED].freeze_frame = int(event.value * state.tick)
-                elif event.ui_element == blue_slider:
-                    if state.tick > 0:
-                        views[Team.BLUE].freeze_frame = int(event.value * state.tick)
+                if event.ui_element == view.tick_controls.slider:
+                    if ctx.state.tick > 0:
+                        view.freeze_frame = int(event.value * ctx.state.tick)
 
             # Handle map clicks for unit selection and waypoints
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 mx, my = event.pos
 
                 # Skip if click is on a pygame_gui element
-                if ui_manager.get_hovering_any_element():
+                if ctx.ui_manager.get_hovering_any_element():
                     continue
 
-                # Check RED player view for unit selection or target
+                # Check each team's player view for unit selection or target
                 grid_pos = screen_to_grid(
                     mx,
                     my,
-                    red_offset_x,
-                    views_offset_y,
-                    state.grid_width,
-                    state.grid_height,
+                    ctx.team_offsets[team],
+                    ctx.views_offset_y,
+                    ctx.state.grid_width,
+                    ctx.state.grid_height,
                 )
-                red_view = views[Team.RED]
                 # Only allow interaction when viewing live (not a freeze frame)
-                if grid_pos is not None and red_view.freeze_frame is None:
-                    if red_view.selected_unit is not None:
+                if grid_pos is not None and view.freeze_frame is None:
+                    if view.selected_unit_id is not None:
                         # Append Move order to working plan
-                        if red_view.working_plan is None:
-                            red_view.working_plan = Plan(
+                        if view.working_plan is None:
+                            view.working_plan = Plan(
                                 interrupts=make_default_interrupts()
                             )
-                        red_view.working_plan.orders.append(Move(target=grid_pos))
+                        view.working_plan.orders.append(Move(target=grid_pos))
                     else:
                         # Try to select a unit
-                        unit = find_unit_at_base(state, grid_pos, Team.RED)
+                        unit = find_unit_at_base(ctx.state, grid_pos, team)
                         if unit is not None:
-                            red_view.selected_unit = unit
+                            view.selected_unit_id = unit.id
                             # Initialize working plan when selecting a unit
-                            red_view.working_plan = Plan(
+                            view.working_plan = Plan(
                                 interrupts=make_default_interrupts()
                             )
 
-                # Check BLUE player view for unit selection or target
-                grid_pos = screen_to_grid(
-                    mx,
-                    my,
-                    blue_offset_x,
-                    views_offset_y,
-                    state.grid_width,
-                    state.grid_height,
+    return True
+
+
+def draw_ui(ctx: GameContext) -> None:
+    """Render all game views and UI elements."""
+    ctx.screen.fill((0, 0, 0))
+
+    # Draw game views
+    draw_player_view(
+        ctx.screen, ctx.views[Team.RED], Team.RED, ctx.red_offset_x, ctx.views_offset_y
+    )
+    draw_god_view(ctx.screen, ctx.state, ctx.god_offset_x, ctx.views_offset_y)
+    draw_player_view(
+        ctx.screen, ctx.views[Team.BLUE], Team.BLUE, ctx.blue_offset_x, ctx.views_offset_y
+    )
+
+    # Update slider positions and labels to reflect current state
+    if ctx.state.tick > 0:
+        red_view = ctx.views[Team.RED]
+        red_view_tick = red_view.freeze_frame
+        if red_view_tick is None:
+            red_view.tick_controls.slider.set_current_value(1.0)
+            red_view.tick_controls.tick_label.set_text(f"t={ctx.state.tick}")
+        else:
+            red_view.tick_controls.slider.set_current_value(red_view_tick / ctx.state.tick)
+            red_view.tick_controls.tick_label.set_text(f"t={red_view_tick}")
+
+        blue_view = ctx.views[Team.BLUE]
+        blue_view_tick = blue_view.freeze_frame
+        if blue_view_tick is None:
+            blue_view.tick_controls.slider.set_current_value(1.0)
+            blue_view.tick_controls.tick_label.set_text(f"t={ctx.state.tick}")
+        else:
+            blue_view.tick_controls.slider.set_current_value(blue_view_tick / ctx.state.tick)
+            blue_view.tick_controls.tick_label.set_text(f"t={blue_view_tick}")
+
+    # Plan area layout
+    plan_y = ctx.slider_y + 30
+    plan_box_height = 180
+    btn_y = plan_y + plan_box_height + 5
+    selection_label_y = ctx.slider_y
+
+    # Handle plan controls for each team
+    for team in Team:
+        view = ctx.views[team]
+        plan_offset_x = ctx.team_offsets[team]
+
+        if view.selected_unit_id is not None:
+            # Get the selected unit
+            selected_unit = ctx.state.units.get(view.selected_unit_id)
+            if selected_unit is None:
+                # Unit no longer exists, clear selection
+                view.selected_unit_id = None
+                view.working_plan = None
+                if view.plan_controls is not None:
+                    view.plan_controls.text_box.kill()
+                    view.plan_controls.issue_plan_btn.kill()  # type: ignore[no-untyped-call]
+                    view.plan_controls.clear_plan_btn.kill()  # type: ignore[no-untyped-call]
+                    view.plan_controls.selection_label.hide()  # type: ignore[no-untyped-call]
+                    view.plan_controls = None
+                continue
+
+            team_name = team.value
+
+            # Create plan controls if they don't exist
+            if view.plan_controls is None:
+                selection_label = pygame_gui.elements.UILabel(
+                    relative_rect=pygame.Rect(plan_offset_x, selection_label_y, ctx.map_pixel_size, 20),
+                    text="",
+                    manager=ctx.ui_manager,
                 )
-                blue_view = views[Team.BLUE]
-                # Only allow interaction when viewing live (not a freeze frame)
-                if grid_pos is not None and blue_view.freeze_frame is None:
-                    if blue_view.selected_unit is not None:
-                        # Append Move order to working plan
-                        if blue_view.working_plan is None:
-                            blue_view.working_plan = Plan(
-                                interrupts=make_default_interrupts()
-                            )
-                        blue_view.working_plan.orders.append(Move(target=grid_pos))
-                    else:
-                        # Try to select a unit
-                        unit = find_unit_at_base(state, grid_pos, Team.BLUE)
-                        if unit is not None:
-                            blue_view.selected_unit = unit
-                            # Initialize working plan when selecting a unit
-                            blue_view.working_plan = Plan(
-                                interrupts=make_default_interrupts()
-                            )
-
-        # Game tick
-        if current_time - last_tick >= tick_interval:
-            tick_game(state)
-            for view in views.values():
-                view.knowledge.tick_knowledge(state)
-            last_tick = current_time
-
-        # Render
-        screen.fill((0, 0, 0))
-
-        # Draw game views (these are still custom pygame rendering)
-        draw_player_view(
-            screen, views[Team.RED], Team.RED, red_offset_x, views_offset_y
-        )
-        draw_god_view(screen, state, god_offset_x, views_offset_y)
-        draw_player_view(
-            screen, views[Team.BLUE], Team.BLUE, blue_offset_x, views_offset_y
-        )
-
-        # Update slider positions and labels to reflect current state
-        if state.tick > 0:
-            red_view_tick = views[Team.RED].freeze_frame
-            if red_view_tick is None:
-                red_slider.set_current_value(1.0)
-                red_tick_label.set_text(f"t={state.tick}")
-            else:
-                red_slider.set_current_value(red_view_tick / state.tick)
-                red_tick_label.set_text(f"t={red_view_tick}")
-
-            blue_view_tick = views[Team.BLUE].freeze_frame
-            if blue_view_tick is None:
-                blue_slider.set_current_value(1.0)
-                blue_tick_label.set_text(f"t={state.tick}")
-            else:
-                blue_slider.set_current_value(blue_view_tick / state.tick)
-                blue_tick_label.set_text(f"t={blue_view_tick}")
-
-        # Plan area layout
-        plan_y = slider_y + 30
-        plan_box_height = 180
-        btn_y = plan_y + plan_box_height + 5
-
-        # Find which team (if any) has a selected unit
-        active_team: Team | None = None
-        for team in [Team.RED, Team.BLUE]:
-            if views[team].selected_unit is not None:
-                active_team = team
-                break
-
-        if active_team is not None:
-            view = views[active_team]
-            selected_unit = view.selected_unit
-            assert selected_unit is not None  # for type checker
-            team_name = active_team.value
-            plan_offset_x = red_offset_x if active_team == Team.RED else blue_offset_x
+                text_box = pygame_gui.elements.UITextBox(
+                    html_text="",
+                    relative_rect=pygame.Rect(
+                        plan_offset_x, plan_y, ctx.map_pixel_size, plan_box_height
+                    ),
+                    manager=ctx.ui_manager,
+                    wrap_to_height=False,
+                )
+                issue_plan_btn = pygame_gui.elements.UIButton(
+                    relative_rect=pygame.Rect(plan_offset_x, btn_y, 80, 20),
+                    text="Issue Plan",
+                    manager=ctx.ui_manager,
+                )
+                clear_plan_btn = pygame_gui.elements.UIButton(
+                    relative_rect=pygame.Rect(plan_offset_x + 90, btn_y, 60, 20),
+                    text="Clear",
+                    manager=ctx.ui_manager,
+                )
+                view.plan_controls = PlanControls(
+                    text_box=text_box,
+                    last_plan_html="",
+                    issue_plan_btn=issue_plan_btn,
+                    clear_plan_btn=clear_plan_btn,
+                    selection_label=selection_label,
+                )
 
             # Update selection label
-            selection_label.set_text(
+            view.plan_controls.selection_label.set_text(
                 f"Selected: {team_name} unit - click {team_name}'s map to add waypoints"
             )
-            selection_label.show()  # type: ignore[no-untyped-call]
+            view.plan_controls.selection_label.show()  # type: ignore[no-untyped-call]
 
             # Display the working plan in a scrollable text box
             if view.working_plan is not None:
                 plan_lines = format_plan(view.working_plan, selected_unit)
                 plan_html = "<br>".join(plan_lines)
 
-                # Create or update the plan text box
-                text_box_rect = pygame.Rect(
-                    plan_offset_x, plan_y, map_pixel_size, plan_box_height
-                )
-
-                # Only recreate or update if position changed or content changed
-                if (
-                    plan_text_box is None
-                    or plan_text_box.relative_rect != text_box_rect
-                ):
-                    # Position changed, need to recreate
-                    if plan_text_box is not None:
-                        plan_text_box.kill()
-                    plan_text_box = pygame_gui.elements.UITextBox(
-                        html_text=plan_html,
-                        relative_rect=text_box_rect,
-                        manager=ui_manager,
-                        wrap_to_height=False,
-                    )
-                    last_plan_html = plan_html
-                elif plan_html != last_plan_html:
-                    # Content changed, update text
-                    plan_text_box.set_text(plan_html)
-                    plan_text_box.rebuild()
-                    last_plan_html = plan_html
-                # else: content unchanged, don't touch the text box (preserves scroll)
-            elif plan_text_box is not None:
-                # No plan, remove the text box
-                plan_text_box.kill()
-                plan_text_box = None
-                last_plan_html = None
-
-            # Create or reposition Issue Plan and Clear buttons
-            if plan_buttons_team != active_team:
-                # Need to recreate buttons for the new team
-                if issue_plan_btn is not None:
-                    issue_plan_btn.kill()  # type: ignore[no-untyped-call]
-                if clear_plan_btn is not None:
-                    clear_plan_btn.kill()  # type: ignore[no-untyped-call]
-
-                issue_plan_btn = pygame_gui.elements.UIButton(
-                    relative_rect=pygame.Rect(plan_offset_x, btn_y, 80, 20),
-                    text="Issue Plan",
-                    manager=ui_manager,
-                )
-                clear_plan_btn = pygame_gui.elements.UIButton(
-                    relative_rect=pygame.Rect(plan_offset_x + 90, btn_y, 60, 20),
-                    text="Clear",
-                    manager=ui_manager,
-                )
-                plan_buttons_team = active_team
+                # Only update if content changed
+                if plan_html != view.plan_controls.last_plan_html:
+                    view.plan_controls.text_box.set_text(plan_html)
+                    view.plan_controls.text_box.rebuild()
+                    view.plan_controls.last_plan_html = plan_html
 
             # Enable/disable Issue Plan button based on whether there are orders
-            if issue_plan_btn is not None:
-                if view.working_plan and view.working_plan.orders:
-                    issue_plan_btn.enable()  # type: ignore[no-untyped-call]
-                else:
-                    issue_plan_btn.disable()  # type: ignore[no-untyped-call]
+            if view.working_plan and view.working_plan.orders:
+                view.plan_controls.issue_plan_btn.enable()  # type: ignore[no-untyped-call]
+            else:
+                view.plan_controls.issue_plan_btn.disable()  # type: ignore[no-untyped-call]
 
         else:
-            # No selected unit on either team
-            selection_label.hide()  # type: ignore[no-untyped-call]
+            # No selected unit for this team, clean up plan controls if they exist
+            if view.plan_controls is not None:
+                view.plan_controls.text_box.kill()
+                view.plan_controls.issue_plan_btn.kill()  # type: ignore[no-untyped-call]
+                view.plan_controls.clear_plan_btn.kill()  # type: ignore[no-untyped-call]
+                view.plan_controls.selection_label.hide()  # type: ignore[no-untyped-call]
+                view.plan_controls = None
 
-            if plan_text_box is not None:
-                plan_text_box.kill()
-                plan_text_box = None
-                last_plan_html = None
+    # Update UI manager
+    ctx.ui_manager.update(ctx.clock.tick(60) / 1000.0)
 
-            if issue_plan_btn is not None:
-                issue_plan_btn.kill()  # type: ignore[no-untyped-call]
-                issue_plan_btn = None
-            if clear_plan_btn is not None:
-                clear_plan_btn.kill()  # type: ignore[no-untyped-call]
-                clear_plan_btn = None
-            plan_buttons_team = None
+    # Draw UI manager
+    ctx.ui_manager.draw_ui(ctx.screen)
 
-        # Update UI manager
-        ui_manager.update(time_delta)
+    pygame.display.flip()
 
-        # Draw UI manager
-        ui_manager.draw_ui(screen)
 
-        pygame.display.flip()
+def main() -> None:
+    """Main game loop: initialize, then loop handling events, ticking, and drawing."""
+    ctx = initialize_game()
+
+    while True:
+        # Handle events
+        if not handle_events(ctx):
+            break
+
+        # Tick game if appropriate
+        current_time = pygame.time.get_ticks()
+        if current_time - ctx.last_tick >= ctx.tick_interval:
+            tick_game(ctx.state)
+            for view in ctx.views.values():
+                view.knowledge.tick_knowledge(ctx.state)
+            ctx.last_tick = current_time
+
+        # Draw
+        draw_ui(ctx)
 
     pygame.quit()
 
 
 if __name__ == "__main__":
     main()
+
