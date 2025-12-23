@@ -3,9 +3,10 @@
 from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections import defaultdict
+from copy import deepcopy
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Protocol, TypeVar, Generic, Callable, Any
+from typing import Protocol, TypeVar, Generic, Callable, Any, NewType
 import random
 import numpy as np
 
@@ -16,6 +17,34 @@ from perlin import perlin
 # Game Constants
 GRID_SIZE = 32
 
+# Unit identification
+UnitId = NewType("UnitId", int)
+_next_unit_id: int = 0
+
+
+def _generate_unit_id() -> UnitId:
+    """Generate a unique unit ID."""
+    global _next_unit_id
+    uid = UnitId(_next_unit_id)
+    _next_unit_id += 1
+    return uid
+
+
+def make_unit(
+    team: Team,
+    pos: Pos,
+    original_pos: Pos | None = None,
+    plan: Plan | None = None,
+) -> Unit:
+    """Create a unit with an auto-generated ID. Useful for tests."""
+    return Unit(
+        id=_generate_unit_id(),
+        team=team,
+        pos=pos,
+        original_pos=original_pos if original_pos is not None else pos,
+        plan=plan if plan is not None else Plan(),
+    )
+
 
 @dataclass
 class FoodConfig:
@@ -23,7 +52,6 @@ class FoodConfig:
 
     scale: float = 10.0
     max_prob: float = 0.0
-    seed: int | None = None
 
 
 class Team(Enum):
@@ -46,6 +74,7 @@ class Empty:
 @dataclass(frozen=True)
 class UnitPresent:
     team: Team
+    unit_id: UnitId
 
 
 @dataclass(frozen=True)
@@ -386,7 +415,6 @@ def _generate_food(
     noise = perlin(
         grid_width,
         grid_height,
-        seed=config.seed if config.seed is not None else random.randint(0, 1000000),
     )
 
     # Perlin noise returns values in range [-1, 1], normalize to [0, 1]
@@ -409,6 +437,7 @@ def _generate_food(
 
 @dataclass
 class Unit:
+    id: UnitId
     team: Team
     pos: Pos
     original_pos: Pos  # Where the unit spawned (for returning home)
@@ -423,7 +452,7 @@ class Unit:
         """Get this unit's original spawn position (for returning home)."""
         return self.original_pos
 
-    def is_near_base(self, state: "GameState") -> bool:
+    def is_in_base(self, state: "GameState") -> bool:
         """Check if unit is inside its home base region."""
         return state.get_base_region(self.team).contains(self.pos)
 
@@ -456,8 +485,8 @@ def make_game(
     )
 
     units = [
-        *[Unit(Team.RED, pos, pos) for pos in random.sample(list(red_base.cells), 3)],
-        *[Unit(Team.BLUE, pos, pos) for pos in random.sample(list(blue_base.cells), 3)],
+        *[Unit(_generate_unit_id(), Team.RED, pos, pos) for pos in random.sample(list(red_base.cells), 3)],
+        *[Unit(_generate_unit_id(), Team.BLUE, pos, pos) for pos in random.sample(list(blue_base.cells), 3)],
     ]
     return GameState(
         grid_width=grid_width,
@@ -471,11 +500,23 @@ def make_game(
 
 
 @dataclass
+class ExpectedTrajectory:
+    """Predicted path of a unit that has left the visible area."""
+
+    unit_id: UnitId
+    start_tick: Timestamp  # When the trajectory was computed
+    positions: list[Pos]  # positions[i] = where unit should be at start_tick + i
+
+
+@dataclass
 class View:
     freeze_frame: Timestamp | None = None
     selected_unit: Unit | None = None
     working_plan: Plan | None = None
     logbook: Logbook = field(default_factory=lambda: defaultdict(dict))
+    last_seen: dict[UnitId, tuple[Timestamp, Unit]] = field(default_factory=dict)
+    expected_trajectories: dict[UnitId, ExpectedTrajectory] = field(default_factory=dict)
+
 
 @dataclass
 class GameState:
@@ -496,11 +537,6 @@ class GameState:
         """Get a team's base region."""
         return self.base_regions[team]
 
-    def get_base_pos(self, team: Team) -> Pos:
-        """Get a position in the team's base (deprecated, for backward compatibility)."""
-        # Return an arbitrary cell from the region
-        return next(iter(self.get_base_region(team).cells))
-
     def _record_observations_from_bases(self) -> None:
         """Record observations from each base region and units in the base."""
         for team in [Team.RED, Team.BLUE]:
@@ -509,14 +545,16 @@ class GameState:
 
             # Add observations from units currently in the base
             for unit in self.units:
-                if unit.team == team and unit.is_near_base(self):
+                if unit.team == team and unit.is_in_base(self):
                     unit_observations = self._observe_from_position(
                         unit.pos, unit.visibility_radius
                     )
                     observations.update(unit_observations)
 
-            if observations:
-                self.views[team].logbook[self.tick].update(observations)
+            self.views[team].logbook[self.tick].update(observations)
+            for unit in self.units:
+                if unit.team == team and unit.pos in observations:
+                    self.views[team].last_seen[unit.id] = (self.tick, deepcopy( unit))
 
     def _observe_from_position(
         self, observer_pos: Pos, visibility_radius: int
@@ -552,7 +590,7 @@ class GameState:
         # Check for units
         for unit in self.units:
             if unit.pos == pos:
-                contents.append(UnitPresent(unit.team))
+                contents.append(UnitPresent(unit.team, unit.id))
 
         # Check for bases (any cell in the region)
         if self.get_base_region(Team.RED).contains(pos):
@@ -584,7 +622,50 @@ class GameState:
         unit.last_sync_tick = self.tick
 
 
-def tick_game(state: GameState) -> None:
+def get_team_visible_cells(state: GameState, team: Team) -> set[Pos]:
+    """Get all cells currently visible to a team (from their logbook at current tick)."""
+    return set(state.views[team].logbook.get(state.tick, {}).keys())
+
+
+def compute_expected_trajectory(
+    unit: Unit,
+    state: GameState,
+    start_tick: Timestamp,
+    max_ticks: int = 100,
+) -> ExpectedTrajectory:
+    """Simulate unit's plan in isolation to predict its path.
+
+    Creates a minimal game state with just this unit (no food, no other units)
+    and runs tick_game to simulate movement including interrupt checks.
+    """
+    # Create minimal game state with just this unit
+    sim_state = GameState(
+        grid_width=state.grid_width,
+        grid_height=state.grid_height,
+        base_regions={team: Region(frozenset([Pos(0,0)])) for team in Team}, # TODO: hack
+        tick=start_tick,
+        units=[deepcopy(unit)],
+        food={},  # No food in simulation
+    )
+
+    positions = [unit.pos]
+    sim_unit = sim_state.units[0]
+
+    for _ in range(max_ticks):
+        if not sim_unit.plan.orders:
+            break
+
+        tick_game(sim_state, is_hypothetical=True)
+        positions.append(sim_unit.pos)
+
+    return ExpectedTrajectory(
+        unit_id=unit.id,
+        start_tick=state.tick,
+        positions=positions,
+    )
+
+
+def tick_game(state: GameState, is_hypothetical: bool = False) -> None:
     """Advance the game by one tick."""
     # 1. Record observations for all units
     for unit in state.units:
@@ -659,17 +740,38 @@ def tick_game(state: GameState) -> None:
                         key=lambda cell: u.pos.manhattan_distance(cell),
                     )
                     state.units.append(
-                        Unit(team=u.team, pos=closest_cell, original_pos=closest_cell)
+                        Unit(id=_generate_unit_id(), team=u.team, pos=closest_cell, original_pos=closest_cell)
                     )
                     unoccupied_cells.remove(closest_cell)
                     u.carrying_food -= 1
 
     # 4. Sync units that are at base
     for unit in state.units:
-        if unit.is_near_base(state):
+        if unit.is_in_base(state):
             state._merge_logbook_to_base(unit)
 
     state.tick += 1
 
+    if is_hypothetical: return
+
     # Record observations from base regions for the new tick
     state._record_observations_from_bases()
+
+    # 5. Compute/validate/clear expected trajectories for each team
+    for team in [Team.RED, Team.BLUE]:
+        visible = get_team_visible_cells(state, team)
+        view = state.views[team]
+
+        # Compute last known trajectories for units not currently visible
+        for unit in state.units:
+            if unit.team != team:
+                continue
+
+            if unit.pos in visible:
+                # Unit is visible - clear any trajectory
+                view.expected_trajectories.pop(unit.id, None)
+            elif unit.id in view.last_seen and unit.id not in view.expected_trajectories:
+                last_seen_tick, last_seen_unit = view.last_seen[unit.id]
+                view.expected_trajectories[unit.id] = compute_expected_trajectory(
+                    last_seen_unit, state, start_tick=last_seen_tick
+                )

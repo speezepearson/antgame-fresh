@@ -4,6 +4,7 @@ from __future__ import annotations
 import random
 from typing import Any
 import argparse
+import numpy
 import pygame
 import pygame_gui
 
@@ -108,13 +109,17 @@ def draw_unit_at(
     offset_x: int,
     offset_y: int,
     selected: bool = False,
+    outline_only: bool = False,
 ) -> None:
     color = (255, 100, 100) if team == Team.RED else (100, 100, 255)
     center_x = offset_x + pos.x * TILE_SIZE + TILE_SIZE // 2
     center_y = offset_y + pos.y * TILE_SIZE + TILE_SIZE // 2
     radius = TILE_SIZE // 3
 
-    pygame.draw.circle(surface, color, (center_x, center_y), radius)
+    if outline_only:
+        pygame.draw.circle(surface, color, (center_x, center_y), radius, 1)
+    else:
+        pygame.draw.circle(surface, color, (center_x, center_y), radius)
     if selected:
         pygame.draw.circle(surface, (255, 255, 0), (center_x, center_y), radius + 3, 2)
 
@@ -270,6 +275,15 @@ def draw_player_view(
                 if isinstance(contents, UnitPresent):
                     draw_unit_at(surface, contents.team, pos, offset_x, offset_y)
 
+    # Draw predicted positions for units with expected trajectories
+    view = state.views[team]
+    for trajectory in view.expected_trajectories.values():
+        # Calculate which position in trajectory corresponds to view_t
+        trajectory_index = view_t - trajectory.start_tick
+        if 0 <= trajectory_index:
+            predicted_pos = trajectory.positions[min(trajectory_index, len(trajectory.positions) - 1)]
+            draw_unit_at(surface, team, predicted_pos, offset_x, offset_y, outline_only=True)
+
 
 def screen_to_grid(
     mouse_x: int,
@@ -334,12 +348,16 @@ def main() -> None:
         help="Maximum probability of food in a cell (default: 0.1)",
     )
     parser.add_argument(
-        "--food-seed",
+        "--seed",
         type=int,
         default=None,
         help="Random seed for food generation (default: random)",
     )
     args = parser.parse_args()
+
+    if args.seed is not None:
+        random.seed(args.seed)
+        numpy.random.seed(args.seed)
 
     pygame.init()
 
@@ -353,7 +371,6 @@ def main() -> None:
     food_config = FoodConfig(
         scale=args.food_scale,
         max_prob=args.food_max_prob,
-        seed=args.food_seed,
     )
     state = make_game(
         grid_width=args.width, grid_height=args.height, food_config=food_config

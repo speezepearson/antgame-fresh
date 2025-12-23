@@ -1,10 +1,10 @@
 import numpy as np
 
 
-def perlin(w: int, h: int, *, seed: int) -> np.ndarray:
+def perlin(w: int, h: int) -> np.ndarray:
     x, y = np.meshgrid(np.linspace(0, 1, w), np.linspace(0, 1, h))
     # permutation table
-    rng = np.random.default_rng(seed)
+    rng = np.random.default_rng()
     p = np.arange(256, dtype=int)
     rng.shuffle(p)
     p = np.stack([p, p]).flatten()
