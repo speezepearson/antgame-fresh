@@ -89,9 +89,6 @@ class FoodPresent:
 
 CellContents = Empty | UnitPresent | BasePresent | FoodPresent
 
-# A logbook maps timestamps to observations (position -> list of contents)
-Logbook = dict[Timestamp, dict[Pos, list[CellContents]]]
-
 
 # ===== Plan-Based Order System =====
 
@@ -435,6 +432,9 @@ def _generate_food(
     }
 
 
+RawObservations = dict[Pos, list[CellContents]]
+ObservationLog = dict[Timestamp, RawObservations]
+
 @dataclass
 class Unit:
     id: UnitId
@@ -443,7 +443,7 @@ class Unit:
     original_pos: Pos  # Where the unit spawned (for returning home)
     plan: Plan = field(default_factory=Plan)
     # Observations since last sync with home base
-    logbook: Logbook = field(default_factory=dict)
+    observation_log: ObservationLog = field(default_factory=dict)
     last_sync_tick: Timestamp = 0
     visibility_radius: int = 5
     carrying_food: int = 0
@@ -499,47 +499,6 @@ def make_game(
     )
 
 
-@dataclass
-class ExpectedTrajectory:
-    """Predicted path of a unit that has left the visible area."""
-
-    unit_id: UnitId
-    start_tick: Timestamp  # When the trajectory was computed
-    positions: list[Pos]  # positions[i] = where unit should be at start_tick + i
-
-
-@dataclass
-class View:
-    freeze_frame: Timestamp | None = None
-    selected_unit: Unit | None = None
-    working_plan: Plan | None = None
-    logbook: Logbook = field(default_factory=lambda: defaultdict(dict))
-    last_seen: dict[UnitId, tuple[Timestamp, Unit]] = field(default_factory=dict)
-    expected_trajectories: dict[UnitId, ExpectedTrajectory] = field(default_factory=dict)
-    last_observations: dict[Pos, tuple[Timestamp, list[CellContents]]] = field(default_factory=dict)
-
-    def add_observations(self, game: GameState, observations: dict[Pos, list[CellContents]]) -> None:
-        self.logbook[game.tick].update(observations)
-        new_keys = set(observations.keys()) - set(self.last_observations.keys())
-        if new_keys: print('new_keys', ' '.join(f'{xy.x},{xy.y}' for xy in new_keys))
-        for pos, contents_list in observations.items():
-            self.last_observations[pos] = (game.tick, contents_list)
-            for contents in contents_list:
-                if isinstance(contents, UnitPresent):
-                    self.last_seen[contents.unit_id] = (game.tick, [u for u in game.units if u.id ==contents.unit_id][0])
-
-    def merge_from_logbook(self, logbook: Logbook) -> None:
-        """Merge a unit's logbook into the team's base logbook."""
-        for timestamp, observations in logbook.items():
-            if timestamp not in self.logbook:
-                self.logbook[timestamp] = {}
-            # Merge observations for this timestamp
-            self.logbook[timestamp].update(observations)
-            for pos, contents_list in observations.items():
-                if not (pos in self.last_observations and self.last_observations[pos][0] >= timestamp):
-                    self.last_observations[pos] = (timestamp, contents_list)
-
-
 
 @dataclass
 class GameState:
@@ -549,36 +508,14 @@ class GameState:
 
     tick: Timestamp = 0
     units: list[Unit] = field(default_factory=list)
-    views: dict[Team, View] = field(default_factory=dict)
     food: dict[Pos, int] = field(default_factory=dict)
-
-    def __post_init__(self) -> None:
-        for team in [Team.RED, Team.BLUE]:
-            self.views.setdefault(team, View())
 
     def get_base_region(self, team: Team) -> Region:
         """Get a team's base region."""
         return self.base_regions[team]
 
-    def _record_observations_from_bases(self) -> None:
-        """Record observations from each base region and units in the base."""
-        for team in [Team.RED, Team.BLUE]:
-            # Start with base region observations
-            observations = self._observe_from_base_region(team)
 
-            # Add observations from units currently in the base
-            for unit in self.units:
-                if unit.team == team and unit.is_in_base(self):
-                    unit_observations = self._observe_from_position(
-                        unit.pos, unit.visibility_radius
-                    )
-                    observations.update(unit_observations)
-
-            self.views[team].add_observations(self, observations)
-
-    def _observe_from_position(
-        self, observer_pos: Pos, visibility_radius: int
-    ) -> dict[Pos, list[CellContents]]:
+    def observe_from_position(self, observer_pos: Pos, visibility_radius: int) -> dict[Pos, list[CellContents]]:
         """Return what can be observed from a given position."""
         observations: dict[Pos, list[CellContents]] = {}
 
@@ -589,21 +526,13 @@ class GameState:
                     pos = Pos(observer_pos.x + dx, observer_pos.y + dy)
                     if 0 <= pos.x < self.grid_width and 0 <= pos.y < self.grid_height:
                         # Check what's at this position
-                        contents = self._get_contents_at(pos)
+                        contents = self.get_contents_at(pos)
                         observations[pos] = contents
 
         return observations
 
-    def _observe_from_base_region(self, team: Team) -> dict[Pos, list[CellContents]]:
-        """Observe only the tiles within the base region itself."""
-        region = self.get_base_region(team)
-        observations: dict[Pos, list[CellContents]] = {}
-        for pos in region.cells:
-            contents = self._get_contents_at(pos)
-            observations[pos] = contents
-        return observations
 
-    def _get_contents_at(self, pos: Pos) -> list[CellContents]:
+    def get_contents_at(self, pos: Pos) -> list[CellContents]:
         """Determine what's actually at a position right now."""
         contents: list[CellContents] = []
 
@@ -628,68 +557,18 @@ class GameState:
 
         return contents
 
-    def _merge_logbook_to_base(self, unit: Unit) -> None:
-        """Merge a unit's logbook into the team's base logbook."""
-        self.views[unit.team].merge_from_logbook(unit.logbook)
-        # Clear unit's logbook and update sync time
-        unit.logbook.clear()
-        unit.last_sync_tick = self.tick
 
-
-def get_team_visible_cells(state: GameState, team: Team) -> set[Pos]:
-    """Get all cells currently visible to a team (from their logbook at current tick)."""
-    return set(state.views[team].logbook.get(state.tick, {}).keys())
-
-
-def compute_expected_trajectory(
-    unit: Unit,
-    state: GameState,
-    start_tick: Timestamp,
-    max_ticks: int = 100,
-) -> ExpectedTrajectory:
-    """Simulate unit's plan in isolation to predict its path.
-
-    Creates a minimal game state with just this unit (no food, no other units)
-    and runs tick_game to simulate movement including interrupt checks.
-    """
-    # Create minimal game state with just this unit
-    sim_state = GameState(
-        grid_width=state.grid_width,
-        grid_height=state.grid_height,
-        base_regions={team: Region(frozenset([Pos(0,0)])) for team in Team}, # TODO: hack
-        tick=start_tick,
-        units=[deepcopy(unit)],
-        food={},  # No food in simulation
-    )
-
-    positions = [unit.pos]
-    sim_unit = sim_state.units[0]
-
-    for _ in range(max_ticks):
-        if not sim_unit.plan.orders:
-            break
-
-        tick_game(sim_state, is_hypothetical=True)
-        positions.append(sim_unit.pos)
-
-    return ExpectedTrajectory(
-        unit_id=unit.id,
-        start_tick=state.tick,
-        positions=positions,
-    )
-
-
-def tick_game(state: GameState, is_hypothetical: bool = False) -> None:
+def tick_game(state: GameState) -> None:
     """Advance the game by one tick."""
     # 1. Record observations for all units
     for unit in state.units:
-        observations = state._observe_from_position(unit.pos, unit.visibility_radius)
-        unit.logbook[state.tick] = observations
+        observations = state.observe_from_position(unit.pos, unit.visibility_radius)
+        unit.observation_log[state.tick] = observations
 
     # 2. Check interrupts for each unit
     for unit in state.units:
         # Get current observations for this unit
-        observations = state._observe_from_position(unit.pos, unit.visibility_radius)
+        observations = state.observe_from_position(unit.pos, unit.visibility_radius)
 
         # Check each interrupt condition
         for interrupt in unit.plan.interrupts:
@@ -759,33 +638,4 @@ def tick_game(state: GameState, is_hypothetical: bool = False) -> None:
                     unoccupied_cells.remove(closest_cell)
                     u.carrying_food -= 1
 
-    # 4. Sync units that are at base
-    for unit in state.units:
-        if unit.is_in_base(state):
-            state._merge_logbook_to_base(unit)
-
     state.tick += 1
-
-    if is_hypothetical: return
-
-    # Record observations from base regions for the new tick
-    state._record_observations_from_bases()
-
-    # 5. Compute/validate/clear expected trajectories for each team
-    for team in [Team.RED, Team.BLUE]:
-        visible = get_team_visible_cells(state, team)
-        view = state.views[team]
-
-        # Compute last known trajectories for units not currently visible
-        for unit in state.units:
-            if unit.team != team:
-                continue
-
-            if unit.pos in visible:
-                # Unit is visible - clear any trajectory
-                view.expected_trajectories.pop(unit.id, None)
-            elif unit.id in view.last_seen and unit.id not in view.expected_trajectories:
-                last_seen_tick, last_seen_unit = view.last_seen[unit.id]
-                view.expected_trajectories[unit.id] = compute_expected_trajectory(
-                    last_seen_unit, state, start_tick=last_seen_tick
-                )

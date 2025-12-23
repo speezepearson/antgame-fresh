@@ -336,12 +336,12 @@ class TestTickGame:
         base_cell = next(iter(red_base.cells))
         red_unit.pos = base_cell
         initial_tick = state.tick
-        red_unit.logbook[initial_tick] = {base_cell: [Empty()]}
+        red_unit.observation_log[initial_tick] = {base_cell: [Empty()]}
 
         tick_game(state)
 
         # Unit's logbook should be synced to base and cleared during tick
-        assert len(red_unit.logbook) == 0
+        assert len(red_unit.observation_log) == 0
         # Sync timestamp should be updated
         assert red_unit.last_sync_tick == initial_tick
 

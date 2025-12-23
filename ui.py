@@ -1,6 +1,7 @@
 """Pygame rendering and UI."""
 
 from __future__ import annotations
+from dataclasses import dataclass, field
 import random
 from typing import Any
 import argparse
@@ -8,7 +9,8 @@ import numpy
 import pygame
 import pygame_gui
 
-from core import Pos, Region
+from core import Pos, Region, Timestamp
+from knowledge import PlayerKnowledge
 from mechanics import (
     Empty,
     FoodInRangeCondition,
@@ -38,6 +40,13 @@ from mechanics import (
 
 # Rendering Constants
 TILE_SIZE = 16
+
+@dataclass
+class PlayerView:
+    knowledge: PlayerKnowledge
+    freeze_frame: Timestamp | None = None
+    selected_unit: Unit | None = None
+    working_plan: Plan | None = None
 
 
 def format_plan(plan: Plan, unit: Unit) -> list[str]:
@@ -88,9 +97,9 @@ def draw_grid(
         )
 
 
-def draw_base(
+def draw_base_cell(
     surface: pygame.Surface,
-    region: Region,
+    pos: Pos,
     team: Team,
     offset_x: int,
     offset_y: int,
@@ -99,14 +108,13 @@ def draw_base(
     """Draw a base region with a faint background tint."""
     # Faint background color for base cells
     tint_color = (80, 40, 40) if team == Team.RED else (40, 40, 200)
-    for pos in region.cells:
-        rect = pygame.Rect(
-            offset_x + pos.x * TILE_SIZE,
-            offset_y + pos.y * TILE_SIZE,
-            TILE_SIZE,
-            TILE_SIZE,
-        )
-        pygame.draw.rect(surface, tint_color, rect)
+    rect = pygame.Rect(
+        offset_x + pos.x * TILE_SIZE,
+        offset_y + pos.y * TILE_SIZE,
+        TILE_SIZE,
+        TILE_SIZE,
+    )
+    pygame.draw.rect(surface, tint_color, rect)
 
 
 def draw_unit_at(
@@ -184,6 +192,16 @@ def draw_food(
                     surface, (100, 255, 100), (tile_x + dx, tile_y + dy), radius
                 )
 
+def god_knowledge(game: GameState) -> PlayerKnowledge:
+    observations = game.observe_from_position(Pos(0, 0), (game.grid_width+game.grid_height))
+    return PlayerKnowledge(
+        team=Team.RED,  # TODO: asymmetric
+        grid_width=game.grid_width,
+        grid_height=game.grid_height,
+        tick=game.tick,
+        all_observations={game.tick: observations},
+        last_observations={pos: (game.tick, contents_list) for pos, contents_list in observations.items()},
+    )
 
 def draw_god_view(
     surface: pygame.Surface,
@@ -196,43 +214,44 @@ def draw_god_view(
     bg_rect = pygame.Rect(offset_x, offset_y, map_pixel_width, map_pixel_height)
     pygame.draw.rect(surface, (30, 30, 30), bg_rect)
 
-    draw_grid(surface, offset_x, offset_y, state.grid_width, state.grid_height)
-    draw_base(surface, state.get_base_region(Team.RED), Team.RED, offset_x, offset_y)
-    draw_base(surface, state.get_base_region(Team.BLUE), Team.BLUE, offset_x, offset_y)
+    knowledge = god_knowledge(state)
+    # breakpoint()
+    draw_player_view(surface, PlayerView(knowledge), Team.RED, offset_x, offset_y)
 
-    # Draw food
-    draw_food(surface, state.food, offset_x, offset_y)
+    # draw_grid(surface, offset_x, offset_y, state.grid_width, state.grid_height)
+    # draw_base_cell(surface, state.get_base_region(Team.RED), Team.RED, offset_x, offset_y)
+    # draw_base_cell(surface, state.get_base_region(Team.BLUE), Team.BLUE, offset_x, offset_y)
 
-    for unit in state.units:
-        draw_unit_at(
-            surface,
-            unit.team,
-            unit.pos,
-            offset_x,
-            offset_y,
-            selected=(unit is state.views[unit.team].selected_unit),
-        )
+    # # Draw food
+    # draw_food(surface, state.food, offset_x, offset_y)
+
+    # for unit in state.units:
+    #     draw_unit_at(
+    #         surface,
+    #         unit.team,
+    #         unit.pos,
+    #         offset_x,
+    #         offset_y,
+    #     )
 
 
 def draw_player_view(
     surface: pygame.Surface,
-    state: GameState,
+    view: PlayerView,
     team: Team,
     offset_x: int,
     offset_y: int,
 ) -> None:
     """Draw a player's view of the map at their selected tick."""
-    freeze_frame = state.views[team].freeze_frame
+    freeze_frame = view.freeze_frame
     # Use current tick when live (freeze_frame is None), otherwise use freeze_frame
-    view_t = state.tick if freeze_frame is None else freeze_frame
-    logbook = state.views[team].logbook
+    view_t = view.knowledge.tick if freeze_frame is None else freeze_frame
+    logbook = view.knowledge.all_observations
 
-    map_pixel_width = state.grid_width * TILE_SIZE
-    map_pixel_height = state.grid_height * TILE_SIZE
+    map_pixel_width = view.knowledge.grid_width * TILE_SIZE
+    map_pixel_height = view.knowledge.grid_height * TILE_SIZE
     bg_rect = pygame.Rect(offset_x, offset_y, map_pixel_width, map_pixel_height)
     pygame.draw.rect(surface, (20, 20, 20), bg_rect)
-
-    draw_grid(surface, offset_x, offset_y, state.grid_width, state.grid_height)
 
     # Get observations for this timestamp
     cur_observations = logbook.get(view_t, {})
@@ -248,59 +267,44 @@ def draw_player_view(
         pygame.draw.rect(surface, (40, 40, 40), rect)
 
     # Redraw grid on top
-    draw_grid(surface, offset_x, offset_y, state.grid_width, state.grid_height)
+    draw_grid(surface, offset_x, offset_y, view.knowledge.grid_width, view.knowledge.grid_height)
 
-    # Draw observed contents (bases first, then units on top)
-    drawn_bases: set[Team] = set()
-    # First pass: draw bases
-    for pos, cur_contents_list in cur_observations.items():
-        for cur_contents in cur_contents_list:
-            if isinstance(cur_contents, BasePresent):
-                if cur_contents.team not in drawn_bases:
-                    draw_base(
+    if freeze_frame is None:
+        for pos, (t, contents_list) in view.knowledge.last_observations.items():
+            if (freeze_frame is not None and t != view.knowledge.tick): continue
+            for contents in sorted(contents_list, key=lambda x: (isinstance(x, UnitPresent), isinstance(x, FoodPresent))):
+                if isinstance(contents, BasePresent):
+                    draw_base_cell(
                         surface,
-                        state.get_base_region(cur_contents.team),
-                        cur_contents.team,
+                        pos,
+                        contents.team,
                         offset_x,
                         offset_y,
                     )
-                    drawn_bases.add(cur_contents.team)
-    # Second pass: draw food in visible areas
-    visible_food = {
-        pos: count for pos, count in state.food.items() if pos in cur_observations
-    }
-    draw_food(surface, visible_food, offset_x, offset_y)
-    # Third pass: draw units on top
-    for pos, cur_contents_list in cur_observations.items():
-        for cur_contents in cur_contents_list:
-            if isinstance(cur_contents, UnitPresent):
-                draw_unit_at(surface, cur_contents.team, pos, offset_x, offset_y)
-
-    # In live view only, draw last_observations for cells not currently visible
-    if freeze_frame is None:
-        last_obs = state.views[team].last_observations
-        for pos, (_, contents_list) in last_obs.items():
-            if pos in cur_observations:
-                continue  # Skip cells we can currently see
-            for contents in contents_list:
-                if isinstance(contents, BasePresent):
-                    if contents.team not in drawn_bases:
-                        draw_base(
-                            surface,
-                            state.get_base_region(contents.team),
-                            contents.team,
-                            offset_x,
-                            offset_y,
-                        )
-                        drawn_bases.add(contents.team)
                 elif isinstance(contents, UnitPresent):
-                    draw_unit_at(surface, contents.team, pos, offset_x, offset_y, outline_only=True)
+                    draw_unit_at(surface, contents.team, pos, offset_x, offset_y, outline_only=pos not in cur_observations)
                 elif isinstance(contents, FoodPresent):
-                    draw_food(surface, {pos: contents.count}, offset_x, offset_y, outline_only=True)
+                    draw_food(surface, {pos: contents.count}, offset_x, offset_y, outline_only=pos not in cur_observations)
+
+    else:
+        for pos, contents_list in view.knowledge.all_observations.get(freeze_frame, {}).items():
+            for contents in sorted(contents_list, key=lambda x: (isinstance(x, UnitPresent), isinstance(x, FoodPresent))):
+                if isinstance(contents, BasePresent):
+                    draw_base_cell(
+                        surface,
+                        pos,
+                        contents.team,
+                        offset_x,
+                        offset_y,
+                    )
+                elif isinstance(contents, UnitPresent):
+                    draw_unit_at(surface, contents.team, pos, offset_x, offset_y, outline_only=False)
+                elif isinstance(contents, FoodPresent):
+                    draw_food(surface, {pos: contents.count}, offset_x, offset_y, outline_only=False)
+
 
     # Draw predicted positions for units with expected trajectories
-    view = state.views[team]
-    for trajectory in view.expected_trajectories.values():
+    for trajectory in view.knowledge.expected_trajectories.values():
         # Calculate which position in trajectory corresponds to view_t
         trajectory_index = view_t - trajectory.start_tick
         if 0 <= trajectory_index:
@@ -490,6 +494,13 @@ def main() -> None:
     tick_interval = 200
     last_tick = pygame.time.get_ticks()
 
+    red_view = PlayerView(knowledge=PlayerKnowledge(team=Team.RED, grid_width=args.width, grid_height=args.height, tick=state.tick))
+    blue_view = PlayerView(knowledge=PlayerKnowledge(team=Team.BLUE, grid_width=args.width, grid_height=args.height, tick=state.tick))
+    views = {
+        Team.RED: red_view,
+        Team.BLUE: blue_view,
+    }
+
     running = True
     while running:
         current_time = pygame.time.get_ticks()
@@ -505,13 +516,13 @@ def main() -> None:
             # Handle pygame_gui button clicks
             elif event.type == pygame_gui.UI_BUTTON_PRESSED:
                 if event.ui_element == red_live_btn:
-                    state.views[Team.RED].freeze_frame = None
+                    views[Team.RED].freeze_frame = None
                 elif event.ui_element == blue_live_btn:
-                    state.views[Team.BLUE].freeze_frame = None
+                    views[Team.BLUE].freeze_frame = None
                 elif event.ui_element == issue_plan_btn:
                     # Issue plan for the active team
                     for team in [Team.RED, Team.BLUE]:
-                        view = state.views[team]
+                        view = views[team]
                         if (
                             view.working_plan is not None
                             and view.working_plan.orders
@@ -524,7 +535,7 @@ def main() -> None:
                 elif event.ui_element == clear_plan_btn:
                     # Clear plan for the active team
                     for team in [Team.RED, Team.BLUE]:
-                        view = state.views[team]
+                        view = views[team]
                         if view.selected_unit is not None:
                             view.working_plan = Plan(interrupts=make_default_interrupts())
                             break
@@ -533,10 +544,10 @@ def main() -> None:
             elif event.type == pygame_gui.UI_HORIZONTAL_SLIDER_MOVED:
                 if event.ui_element == red_slider:
                     if state.tick > 0:
-                        state.views[Team.RED].freeze_frame = int(event.value * state.tick)
+                        views[Team.RED].freeze_frame = int(event.value * state.tick)
                 elif event.ui_element == blue_slider:
                     if state.tick > 0:
-                        state.views[Team.BLUE].freeze_frame = int(event.value * state.tick)
+                        views[Team.BLUE].freeze_frame = int(event.value * state.tick)
 
             # Handle map clicks for unit selection and waypoints
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
@@ -555,7 +566,7 @@ def main() -> None:
                     state.grid_width,
                     state.grid_height,
                 )
-                red_view = state.views[Team.RED]
+                red_view = views[Team.RED]
                 # Only allow interaction when viewing live (not a freeze frame)
                 if grid_pos is not None and red_view.freeze_frame is None:
                     if red_view.selected_unit is not None:
@@ -584,7 +595,7 @@ def main() -> None:
                     state.grid_width,
                     state.grid_height,
                 )
-                blue_view = state.views[Team.BLUE]
+                blue_view = views[Team.BLUE]
                 # Only allow interaction when viewing live (not a freeze frame)
                 if grid_pos is not None and blue_view.freeze_frame is None:
                     if blue_view.selected_unit is not None:
@@ -607,19 +618,21 @@ def main() -> None:
         # Game tick
         if current_time - last_tick >= tick_interval:
             tick_game(state)
+            for view in views.values():
+                view.knowledge.tick_knowledge(state)
             last_tick = current_time
 
         # Render
         screen.fill((0, 0, 0))
 
         # Draw game views (these are still custom pygame rendering)
-        draw_player_view(screen, state, Team.RED, red_offset_x, views_offset_y)
+        draw_player_view(screen, views[Team.RED], Team.RED, red_offset_x, views_offset_y)
         draw_god_view(screen, state, god_offset_x, views_offset_y)
-        draw_player_view(screen, state, Team.BLUE, blue_offset_x, views_offset_y)
+        draw_player_view(screen, views[Team.BLUE], Team.BLUE, blue_offset_x, views_offset_y)
 
         # Update slider positions and labels to reflect current state
         if state.tick > 0:
-            red_view_tick = state.views[Team.RED].freeze_frame
+            red_view_tick = views[Team.RED].freeze_frame
             if red_view_tick is None:
                 red_slider.set_current_value(1.0)
                 red_tick_label.set_text(f"t={state.tick}")
@@ -627,7 +640,7 @@ def main() -> None:
                 red_slider.set_current_value(red_view_tick / state.tick)
                 red_tick_label.set_text(f"t={red_view_tick}")
 
-            blue_view_tick = state.views[Team.BLUE].freeze_frame
+            blue_view_tick = views[Team.BLUE].freeze_frame
             if blue_view_tick is None:
                 blue_slider.set_current_value(1.0)
                 blue_tick_label.set_text(f"t={state.tick}")
@@ -643,12 +656,12 @@ def main() -> None:
         # Find which team (if any) has a selected unit
         active_team: Team | None = None
         for team in [Team.RED, Team.BLUE]:
-            if state.views[team].selected_unit is not None:
+            if views[team].selected_unit is not None:
                 active_team = team
                 break
 
         if active_team is not None:
-            view = state.views[active_team]
+            view = views[active_team]
             selected_unit = view.selected_unit
             assert selected_unit is not None  # for type checker
             team_name = active_team.value
