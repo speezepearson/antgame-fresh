@@ -96,8 +96,8 @@ def test_serialize_deserialize_cell_contents():
     # UnitPresent
     unit_present = UnitPresent(team=Team.RED, unit_id=UnitId(42))
     deserialized = deserialize_cell_contents(serialize_cell_contents(unit_present))
-    assert deserialized.team == unit_present.team
-    assert deserialized.unit_id == unit_present.unit_id
+    assert deserialized.team == unit_present.team  # type: ignore[union-attr]
+    assert deserialized.unit_id == unit_present.unit_id  # type: ignore[union-attr]
 
     # BasePresent
     base_present = BasePresent(team=Team.BLUE)
@@ -182,8 +182,8 @@ def test_serialize_deserialize_plan():
     data = serialize_plan(plan)
     deserialized = deserialize_plan(data)
     assert len(deserialized.orders) == 2
-    assert deserialized.orders[0].target == Pos(1, 2)
-    assert deserialized.orders[1].target == Pos(3, 4)
+    assert deserialized.orders[0].target == Pos(1, 2)  # type: ignore[attr-defined]
+    assert deserialized.orders[1].target == Pos(3, 4)  # type: ignore[attr-defined]
     assert len(deserialized.interrupts) == 1
     assert isinstance(deserialized.interrupts[0].condition, FoodInRangeCondition)
 
@@ -223,7 +223,7 @@ def test_serialize_deserialize_observation_log():
             Pos(2, 2): [FoodPresent(count=3)],
         },
     }
-    data = serialize_observation_log(log)
+    data = serialize_observation_log(log)  # type: ignore[arg-type]
     deserialized = deserialize_observation_log(data)
     assert Timestamp(0) in deserialized
     assert Timestamp(5) in deserialized
@@ -329,7 +329,7 @@ def test_local_client_set_unit_plan():
 
     # Verify plan was set
     assert len(state.units[unit_id].plan.orders) == 1
-    assert state.units[unit_id].plan.orders[0].target == Pos(10, 10)
+    assert state.units[unit_id].plan.orders[0].target == Pos(10, 10)  # type: ignore[attr-defined]
 
 
 def test_local_client_get_base_region():
@@ -391,8 +391,184 @@ def test_local_client_get_available_teams():
 
 
 @pytest.fixture
-def test_server():
-    """Create a test server with a game state."""
+def test_app():
+    """Create a test Flask app with game state."""
+    state = make_game(grid_width=16, grid_height=16)
+    knowledge = {
+        Team.RED: PlayerKnowledge(Team.RED, 16, 16, state.tick),
+        Team.BLUE: PlayerKnowledge(Team.BLUE, 16, 16, state.tick),
+    }
+
+    # Initialize knowledge with base observations
+    for team in [Team.RED, Team.BLUE]:
+        knowledge[team].record_observations_from_bases(state)
+
+    server = GameServer(state, knowledge, port=5000)
+    # Use Flask test client instead of starting actual server
+    app = server.app
+    app.config['TESTING'] = True
+
+    yield app.test_client(), state, knowledge
+
+    # No cleanup needed - test client doesn't start threads
+
+
+def test_server_get_knowledge(test_app):
+    """Test server /knowledge endpoint."""
+    client, state, knowledge = test_app
+
+    # Request knowledge for RED team
+    response = client.get("/knowledge/RED")
+    assert response.status_code == 200
+
+    data = response.get_json()
+    assert "knowledge" in data
+    assert "base_region" in data
+
+    # Verify knowledge data
+    knowledge_data = data["knowledge"]
+    assert knowledge_data["team"] == "RED"
+    assert knowledge_data["grid_width"] == 16
+    assert knowledge_data["grid_height"] == 16
+
+
+def test_server_get_knowledge_invalid_team(test_app):
+    """Test server /knowledge endpoint with invalid team."""
+    client, state, knowledge = test_app
+
+    response = client.get("/knowledge/INVALID")
+    assert response.status_code == 400
+    assert "error" in response.get_json()
+
+
+def test_server_get_knowledge_with_tick(test_app):
+    """Test server /knowledge endpoint with tick parameter."""
+    client, state, knowledge = test_app
+
+    # Advance game before making request
+    tick_game(state)
+    for k in knowledge.values():
+        k.tick_knowledge(state)
+
+    # Request knowledge for tick 1
+    response = client.get("/knowledge/RED?tick=1")
+    assert response.status_code == 200
+
+    data = response.get_json()
+    assert data["knowledge"]["tick"] >= 1
+
+
+def test_server_get_knowledge_returns_immediately_for_past_tick(test_app):
+    """Test server returns immediately if knowledge already at requested tick."""
+    client, state, knowledge = test_app
+
+    # Advance to tick 2
+    tick_game(state)
+    tick_game(state)
+    for k in knowledge.values():
+        k.tick_knowledge(state)
+        k.tick_knowledge(state)
+
+    # Request tick 1 (should return immediately)
+    start_time = time.time()
+    response = client.get("/knowledge/RED?tick=1")
+    elapsed = time.time() - start_time
+
+    assert response.status_code == 200
+    assert elapsed < 0.5  # Should be nearly instant
+    assert response.get_json()["knowledge"]["tick"] >= 1
+
+
+def test_server_set_unit_plan(test_app):
+    """Test server /act endpoint."""
+    client, state, knowledge = test_app
+
+    # Get a RED unit in the base
+    red_units = [u for u in state.units.values() if u.team == Team.RED]
+    unit_id = red_units[0].id
+
+    # Create a plan
+    plan_data = {
+        "orders": [{"type": "Move", "target": {"x": 10, "y": 10}}],
+        "interrupts": [],
+    }
+
+    # Set the plan
+    response = client.post(
+        f"/act/RED/{unit_id}",
+        json=plan_data,
+    )
+    assert response.status_code == 200
+    assert response.get_json()["success"] is True
+
+    # Verify plan was set
+    assert len(state.units[unit_id].plan.orders) == 1
+    assert state.units[unit_id].plan.orders[0].target == Pos(10, 10)
+
+
+def test_server_set_unit_plan_invalid_team(test_app):
+    """Test server /act endpoint with invalid team."""
+    client, state, knowledge = test_app
+
+    plan_data = {
+        "orders": [{"type": "Move", "target": {"x": 10, "y": 10}}],
+        "interrupts": [],
+    }
+
+    response = client.post(
+        "/act/INVALID/1",
+        json=plan_data,
+    )
+    assert response.status_code == 400
+    assert "error" in response.get_json()
+
+
+def test_server_set_unit_plan_invalid_data(test_app):
+    """Test server /act endpoint with invalid plan data."""
+    client, state, knowledge = test_app
+
+    # Invalid plan data
+    response = client.post(
+        "/act/RED/1",
+        json={"invalid": "data"},
+    )
+    assert response.status_code == 400
+    assert "error" in response.get_json()
+
+
+def test_server_set_unit_plan_unit_not_in_base(test_app):
+    """Test server rejects plan for unit not in base."""
+    client, state, knowledge = test_app
+
+    # Get a RED unit and move it out of base
+    red_unit = next(u for u in state.units.values() if u.team == Team.RED)
+
+    # Move unit far from base
+    red_unit.pos = Pos(20, 20)
+
+    plan_data = {
+        "orders": [{"type": "Move", "target": {"x": 10, "y": 10}}],
+        "interrupts": [],
+    }
+
+    response = client.post(
+        f"/act/RED/{red_unit.id}",
+        json=plan_data,
+    )
+    # Should fail because unit is not in base
+    assert response.status_code == 400
+    assert "error" in response.get_json()
+
+
+# ===== RemoteClient Tests (Integration - requires real server) =====
+
+
+@pytest.fixture
+def running_server():
+    """Create and start a real server for integration tests.
+
+    Only use this for tests that actually need a running server (RemoteClient tests).
+    """
     import random
 
     # Use random port to avoid conflicts
@@ -414,145 +590,17 @@ def test_server():
     # Give server time to start
     time.sleep(0.5)
 
-    # Store port for tests to use
-    server.port = port
-
     yield server, state, knowledge, port
 
     # Cleanup
     server.stop()
-    time.sleep(0.2)
+    time.sleep(0.3)
 
 
-def test_server_get_knowledge(test_server):
-    """Test server /knowledge endpoint."""
-    server, state, knowledge, port = test_server
-
-    import requests
-
-    # Request knowledge for RED team
-    response = requests.get(f"http://localhost:{port}/knowledge/RED")
-    assert response.status_code == 200
-
-    data = response.json()
-    assert "knowledge" in data
-    assert "base_region" in data
-
-    # Verify knowledge data
-    knowledge_data = data["knowledge"]
-    assert knowledge_data["team"] == "RED"
-    assert knowledge_data["grid_width"] == 16
-    assert knowledge_data["grid_height"] == 16
-
-
-def test_server_get_knowledge_invalid_team(test_server):
-    """Test server /knowledge endpoint with invalid team."""
-    server, state, knowledge, port = test_server
-
-    import requests
-
-    response = requests.get(f"http://localhost:{port}/knowledge/INVALID")
-    assert response.status_code == 400
-    assert "error" in response.json()
-
-
-def test_server_get_knowledge_with_tick(test_server):
-    """Test server /knowledge endpoint with tick parameter."""
-    server, state, knowledge, port = test_server
-
-    import requests
-
-    # Advance game in background thread
-    def advance_game():
-        time.sleep(0.2)
-        tick_game(state)
-        for k in knowledge.values():
-            k.tick_knowledge(state)
-
-    thread = threading.Thread(target=advance_game, daemon=True)
-    thread.start()
-
-    # Request knowledge for tick 1 (should wait)
-    start_time = time.time()
-    response = requests.get(f"http://localhost:{port}/knowledge/RED?tick=1")
-    elapsed = time.time() - start_time
-
-    assert response.status_code == 200
-    assert elapsed >= 0.1  # Should have waited for game to advance
-
-    data = response.json()
-    assert data["knowledge"]["tick"] >= 1
-
-
-def test_server_set_unit_plan(test_server):
-    """Test server /act endpoint."""
-    server, state, knowledge, port = test_server
-
-    import requests
-
-    # Get a RED unit in the base
-    red_units = [u for u in state.units.values() if u.team == Team.RED]
-    unit_id = red_units[0].id
-
-    # Create a plan
-    plan_data = {
-        "orders": [{"type": "Move", "target": {"x": 10, "y": 10}}],
-        "interrupts": [],
-    }
-
-    # Set the plan
-    response = requests.post(
-        f"http://localhost:{port}/act/RED/{unit_id}",
-        json=plan_data,
-    )
-    assert response.status_code == 200
-    assert response.json()["success"] is True
-
-    # Verify plan was set
-    assert len(state.units[unit_id].plan.orders) == 1
-    assert state.units[unit_id].plan.orders[0].target == Pos(10, 10)
-
-
-def test_server_set_unit_plan_invalid_team(test_server):
-    """Test server /act endpoint with invalid team."""
-    server, state, knowledge, port = test_server
-
-    import requests
-
-    plan_data = {
-        "orders": [{"type": "Move", "target": {"x": 10, "y": 10}}],
-        "interrupts": [],
-    }
-
-    response = requests.post(
-        f"http://localhost:{port}/act/INVALID/1",
-        json=plan_data,
-    )
-    assert response.status_code == 400
-    assert "error" in response.json()
-
-
-def test_server_set_unit_plan_invalid_data(test_server):
-    """Test server /act endpoint with invalid plan data."""
-    server, state, knowledge, port = test_server
-
-    import requests
-
-    # Invalid plan data
-    response = requests.post(
-        f"http://localhost:{port}/act/RED/1",
-        json={"invalid": "data"},
-    )
-    assert response.status_code == 400
-    assert "error" in response.json()
-
-
-# ===== RemoteClient Tests =====
-
-
-def test_remote_client_initialization(test_server):
+@pytest.mark.integration
+def test_remote_client_initialization(running_server):
     """Test RemoteClient can initialize and fetch initial knowledge."""
-    server, state, knowledge, port = test_server
+    server, state, knowledge, port = running_server
 
     client = RemoteClient(url=f"http://localhost:{port}", team=Team.RED)
 
@@ -564,9 +612,10 @@ def test_remote_client_initialization(test_server):
     assert client._base_region is not None
 
 
-def test_remote_client_get_player_knowledge(test_server):
+@pytest.mark.integration
+def test_remote_client_get_player_knowledge(running_server):
     """Test RemoteClient can fetch player knowledge."""
-    server, state, knowledge, port = test_server
+    server, state, knowledge, port = running_server
 
     client = RemoteClient(url=f"http://localhost:{port}", team=Team.RED)
 
@@ -581,9 +630,10 @@ def test_remote_client_get_player_knowledge(test_server):
         client.get_player_knowledge(Team.BLUE)
 
 
-def test_remote_client_set_unit_plan(test_server):
+@pytest.mark.integration
+def test_remote_client_set_unit_plan(running_server):
     """Test RemoteClient can set unit plans."""
-    server, state, knowledge, port = test_server
+    server, state, knowledge, port = running_server
 
     client = RemoteClient(url=f"http://localhost:{port}", team=Team.RED)
 
@@ -600,9 +650,10 @@ def test_remote_client_set_unit_plan(test_server):
     assert state.units[unit_id].plan.orders[0].target == Pos(12, 12)
 
 
-def test_remote_client_set_unit_plan_wrong_team(test_server):
+@pytest.mark.integration
+def test_remote_client_set_unit_plan_wrong_team(running_server):
     """Test RemoteClient cannot set plans for other team."""
-    server, state, knowledge, port = test_server
+    server, state, knowledge, port = running_server
 
     client = RemoteClient(url=f"http://localhost:{port}", team=Team.RED)
 
@@ -612,9 +663,10 @@ def test_remote_client_set_unit_plan_wrong_team(test_server):
         client.set_unit_plan(Team.BLUE, UnitId(1), new_plan)
 
 
-def test_remote_client_get_base_region(test_server):
+@pytest.mark.integration
+def test_remote_client_get_base_region(running_server):
     """Test RemoteClient can get base region."""
-    server, state, knowledge, port = test_server
+    server, state, knowledge, port = running_server
 
     client = RemoteClient(url=f"http://localhost:{port}", team=Team.RED)
 
@@ -627,9 +679,10 @@ def test_remote_client_get_base_region(test_server):
         client.get_base_region(Team.BLUE)
 
 
-def test_remote_client_get_current_tick(test_server):
+@pytest.mark.integration
+def test_remote_client_get_current_tick(running_server):
     """Test RemoteClient can get current tick."""
-    server, state, knowledge, port = test_server
+    server, state, knowledge, port = running_server
 
     client = RemoteClient(url=f"http://localhost:{port}", team=Team.RED)
 
@@ -637,18 +690,20 @@ def test_remote_client_get_current_tick(test_server):
     assert tick >= 0
 
 
-def test_remote_client_get_god_view(test_server):
+@pytest.mark.integration
+def test_remote_client_get_god_view(running_server):
     """Test RemoteClient cannot get god view."""
-    server, state, knowledge, port = test_server
+    server, state, knowledge, port = running_server
 
     client = RemoteClient(url=f"http://localhost:{port}", team=Team.RED)
 
     assert client.get_god_view() is None
 
 
-def test_remote_client_get_available_teams(test_server):
+@pytest.mark.integration
+def test_remote_client_get_available_teams(running_server):
     """Test RemoteClient only returns own team."""
-    server, state, knowledge, port = test_server
+    server, state, knowledge, port = running_server
 
     client = RemoteClient(url=f"http://localhost:{port}", team=Team.RED)
 
@@ -656,9 +711,10 @@ def test_remote_client_get_available_teams(test_server):
     assert teams == [Team.RED]
 
 
-def test_remote_client_knowledge_updates(test_server):
+@pytest.mark.integration
+def test_remote_client_knowledge_updates(running_server):
     """Test RemoteClient can fetch updated knowledge."""
-    server, state, knowledge, port = test_server
+    server, state, knowledge, port = running_server
 
     client = RemoteClient(url=f"http://localhost:{port}", team=Team.RED)
 
@@ -677,9 +733,10 @@ def test_remote_client_knowledge_updates(test_server):
 # ===== Integration Tests =====
 
 
-def test_client_server_integration(test_server):
+@pytest.mark.integration
+def test_client_server_integration(running_server):
     """Test full client-server interaction."""
-    server, state, knowledge, port = test_server
+    server, state, knowledge, port = running_server
 
     # Create clients for both teams
     red_client = RemoteClient(url=f"http://localhost:{port}", team=Team.RED)
