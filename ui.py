@@ -3,7 +3,8 @@
 from __future__ import annotations
 from dataclasses import dataclass, field
 import random
-from typing import Any
+import threading
+from typing import Any, Literal
 import argparse
 import numpy
 import pygame
@@ -36,6 +37,10 @@ from mechanics import (
     PositionReachedCondition,
     FoodConfig,
 )
+from client import GameClient, LocalGameClient, RemoteGameClient
+from server import create_server
+
+GameMode = Literal["local", "server", "client"]
 
 
 # Rendering Constants
@@ -340,6 +345,44 @@ def find_unit_at_base(state: GameState, pos: Pos, team: Team) -> Unit | None:
     return None
 
 
+def find_unit_at_base_from_knowledge(
+    knowledge: PlayerKnowledge, pos: Pos, team: Team, state: GameState | None = None
+) -> Unit | None:
+    """Find a unit from knowledge at pos, only if inside their base region.
+
+    In client mode (state=None), we check if pos is in a base from observations.
+    In local/server mode, we use the actual GameState to find the unit.
+    """
+    if state is not None:
+        # Local/server mode: use the actual game state
+        return find_unit_at_base(state, pos, team)
+
+    # Client mode: find unit from knowledge observations
+    # Check if there's a base at this position
+    last_obs = knowledge.last_observations.get(pos)
+    if last_obs is None:
+        return None
+
+    _, contents_list = last_obs
+    has_base = any(isinstance(c, BasePresent) and c.team == team for c in contents_list)
+    if not has_base:
+        return None
+
+    # Find unit at this position
+    for contents in contents_list:
+        if isinstance(contents, UnitPresent) and contents.team == team:
+            # Create a minimal Unit object for selection purposes
+            # Note: we don't have full unit data in client mode, but we have the ID
+            return Unit(
+                id=contents.unit_id,
+                team=contents.team,
+                pos=pos,
+                original_pos=pos,  # We don't know the original pos, so use current
+            )
+
+    return None
+
+
 def make_default_interrupts() -> list[Interrupt[Any]]:
     return [
         Interrupt(
@@ -380,7 +423,39 @@ def main() -> None:
         default=None,
         help="Random seed for food generation (default: random)",
     )
+    parser.add_argument(
+        "--mode",
+        type=str,
+        choices=["local", "server", "client"],
+        default="local",
+        help="Game mode: local (single player), server (host multiplayer), or client (join multiplayer)",
+    )
+    parser.add_argument(
+        "--server-url",
+        type=str,
+        default="http://localhost:5000",
+        help="Server URL for client mode (default: http://localhost:5000)",
+    )
+    parser.add_argument(
+        "--team",
+        type=str,
+        choices=["RED", "BLUE"],
+        default=None,
+        help="Team to play as in client mode (required for client mode)",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=5000,
+        help="Port for server mode (default: 5000)",
+    )
     args = parser.parse_args()
+
+    # Validate client mode requirements
+    if args.mode == "client" and args.team is None:
+        parser.error("--team is required in client mode")
+
+    mode: GameMode = args.mode
 
     if args.seed is not None:
         random.seed(args.seed)
@@ -388,97 +463,193 @@ def main() -> None:
 
     pygame.init()
 
-    # Layout: RED view (with slider) | GOD view | BLUE view (with slider)
+    # Initialize game state and client based on mode
+    state: GameState | None = None
+    client: GameClient
+    client_team: Team | None = None
+    flask_server = None
+
+    if mode in ["local", "server"]:
+        # Create game state locally
+        food_config = FoodConfig(
+            scale=args.food_scale,
+            max_prob=args.food_max_prob,
+        )
+        state = make_game(
+            grid_width=args.width, grid_height=args.height, food_config=food_config
+        )
+
+        # Initialize knowledge for both teams
+        red_view = PlayerView(knowledge=PlayerKnowledge(team=Team.RED, grid_width=args.width, grid_height=args.height, tick=state.tick))
+        blue_view = PlayerView(knowledge=PlayerKnowledge(team=Team.BLUE, grid_width=args.width, grid_height=args.height, tick=state.tick))
+        views = {
+            Team.RED: red_view,
+            Team.BLUE: blue_view,
+        }
+
+        # Create local client
+        client = LocalGameClient(state, {Team.RED: red_view.knowledge, Team.BLUE: blue_view.knowledge})
+
+        # Start Flask server in server mode
+        if mode == "server":
+            flask_app = create_server(state, {Team.RED: red_view.knowledge, Team.BLUE: blue_view.knowledge}, port=args.port)
+            flask_thread = threading.Thread(
+                target=lambda: flask_app.run(host="0.0.0.0", port=args.port, debug=False, use_reloader=False),
+                daemon=True,
+            )
+            flask_thread.start()
+            print(f"Server started on port {args.port}")
+
+    else:  # client mode
+        client_team = Team(args.team)
+        client = RemoteGameClient(args.server_url, client_team)
+
+        # Fetch initial knowledge from server
+        initial_knowledge = client.get_knowledge(client_team, 0)
+        views = {
+            client_team: PlayerView(knowledge=initial_knowledge),
+        }
+
+        # We don't have access to GameState in client mode
+        state = None
+
+    # Determine layout based on mode
+    if mode == "client":
+        # Client mode: only show the player's team view
+        assert client_team is not None, "client_team must be set in client mode"
+        num_views = 1
+        map_pixel_size = views[client_team].knowledge.grid_width * TILE_SIZE
+    else:
+        # Local/server mode: show all three views
+        assert state is not None, "state must be set in local/server mode"
+        num_views = 3
+        map_pixel_size = state.grid_width * TILE_SIZE
+
+    # Layout
     padding = 10
     label_height = 25
     slider_height = 30
     plan_area_height = 240  # Space for plan display and buttons below player maps
 
-    # Create the game state first to get grid dimensions
-    food_config = FoodConfig(
-        scale=args.food_scale,
-        max_prob=args.food_max_prob,
-    )
-    state = make_game(
-        grid_width=args.width, grid_height=args.height, food_config=food_config
-    )
-    map_pixel_size = state.grid_width * TILE_SIZE
-
-    window_width = map_pixel_size * 3 + padding * 4
+    window_width = map_pixel_size * num_views + padding * (num_views + 1)
     window_height = (
         map_pixel_size + padding * 2 + label_height + slider_height + plan_area_height
     )
 
     screen = pygame.display.set_mode((window_width, window_height))
-    pygame.display.set_caption("Ant RTS")
+    pygame.display.set_caption(f"Ant RTS - {mode.upper()} mode")
 
     # Initialize pygame_gui manager
     ui_manager = pygame_gui.UIManager((window_width, window_height))
 
     clock = pygame.time.Clock()
 
-    red_offset_x = padding
-    god_offset_x = padding * 2 + map_pixel_size
-    blue_offset_x = padding * 3 + map_pixel_size * 2
+    # Calculate view offsets based on mode
     views_offset_y = padding + label_height
     slider_y = views_offset_y + map_pixel_size + 5
     slider_width = map_pixel_size - 100
 
-    # Create pygame_gui labels
-    red_label = pygame_gui.elements.UILabel(
-        relative_rect=pygame.Rect(red_offset_x, padding, 100, label_height),
-        text="RED'S MAP",
-        manager=ui_manager,
-    )
-    god_label = pygame_gui.elements.UILabel(
-        relative_rect=pygame.Rect(god_offset_x, padding, 120, label_height),
-        text="GOD'S EYE VIEW",
-        manager=ui_manager,
-    )
-    blue_label = pygame_gui.elements.UILabel(
-        relative_rect=pygame.Rect(blue_offset_x, padding, 100, label_height),
-        text="BLUE'S MAP",
-        manager=ui_manager,
-    )
+    if mode == "client":
+        # Client mode: single view centered
+        assert client_team is not None
+        view_offset_x = padding
+        team_name = client_team.value
+        team_label = pygame_gui.elements.UILabel(
+            relative_rect=pygame.Rect(view_offset_x, padding, 100, label_height),
+            text=f"{team_name}'S MAP",
+            manager=ui_manager,
+        )
+        team_slider = pygame_gui.elements.UIHorizontalSlider(
+            relative_rect=pygame.Rect(view_offset_x, slider_y, slider_width, 20),
+            start_value=0.0,
+            value_range=(0.0, 1.0),
+            manager=ui_manager,
+        )
+        team_tick_label = pygame_gui.elements.UILabel(
+            relative_rect=pygame.Rect(view_offset_x + slider_width + 5, slider_y, 45, 20),
+            text="t=0",
+            manager=ui_manager,
+        )
+        team_live_btn = pygame_gui.elements.UIButton(
+            relative_rect=pygame.Rect(view_offset_x + slider_width + 50, slider_y, 50, 20),
+            text="LIVE",
+            manager=ui_manager,
+        )
+        # Store references for event handling
+        sliders_and_buttons = {
+            client_team: (team_slider, team_tick_label, team_live_btn)
+        }
+        red_offset_x = view_offset_x
+        god_offset_x = None
+        blue_offset_x = None
+    else:
+        # Local/server mode: three views
+        red_offset_x = padding
+        god_offset_x = padding * 2 + map_pixel_size
+        blue_offset_x = padding * 3 + map_pixel_size * 2
 
-    # Create time sliders for each team
-    red_slider = pygame_gui.elements.UIHorizontalSlider(
-        relative_rect=pygame.Rect(red_offset_x, slider_y, slider_width, 20),
-        start_value=0.0,
-        value_range=(0.0, 1.0),
-        manager=ui_manager,
-    )
-    red_tick_label = pygame_gui.elements.UILabel(
-        relative_rect=pygame.Rect(red_offset_x + slider_width + 5, slider_y, 45, 20),
-        text="t=0",
-        manager=ui_manager,
-    )
-    red_live_btn = pygame_gui.elements.UIButton(
-        relative_rect=pygame.Rect(red_offset_x + slider_width + 50, slider_y, 50, 20),
-        text="LIVE",
-        manager=ui_manager,
-    )
+        # Create pygame_gui labels
+        red_label = pygame_gui.elements.UILabel(
+            relative_rect=pygame.Rect(red_offset_x, padding, 100, label_height),
+            text="RED'S MAP",
+            manager=ui_manager,
+        )
+        god_label = pygame_gui.elements.UILabel(
+            relative_rect=pygame.Rect(god_offset_x, padding, 120, label_height),
+            text="GOD'S EYE VIEW",
+            manager=ui_manager,
+        )
+        blue_label = pygame_gui.elements.UILabel(
+            relative_rect=pygame.Rect(blue_offset_x, padding, 100, label_height),
+            text="BLUE'S MAP",
+            manager=ui_manager,
+        )
 
-    blue_slider = pygame_gui.elements.UIHorizontalSlider(
-        relative_rect=pygame.Rect(blue_offset_x, slider_y, slider_width, 20),
-        start_value=0.0,
-        value_range=(0.0, 1.0),
-        manager=ui_manager,
-    )
-    blue_tick_label = pygame_gui.elements.UILabel(
-        relative_rect=pygame.Rect(blue_offset_x + slider_width + 5, slider_y, 45, 20),
-        text="t=0",
-        manager=ui_manager,
-    )
-    blue_live_btn = pygame_gui.elements.UIButton(
-        relative_rect=pygame.Rect(blue_offset_x + slider_width + 50, slider_y, 50, 20),
-        text="LIVE",
-        manager=ui_manager,
-    )
+        # Create time sliders for each team in local/server mode
+        red_slider = pygame_gui.elements.UIHorizontalSlider(
+            relative_rect=pygame.Rect(red_offset_x, slider_y, slider_width, 20),
+            start_value=0.0,
+            value_range=(0.0, 1.0),
+            manager=ui_manager,
+        )
+        red_tick_label = pygame_gui.elements.UILabel(
+            relative_rect=pygame.Rect(red_offset_x + slider_width + 5, slider_y, 45, 20),
+            text="t=0",
+            manager=ui_manager,
+        )
+        red_live_btn = pygame_gui.elements.UIButton(
+            relative_rect=pygame.Rect(red_offset_x + slider_width + 50, slider_y, 50, 20),
+            text="LIVE",
+            manager=ui_manager,
+        )
+
+        blue_slider = pygame_gui.elements.UIHorizontalSlider(
+            relative_rect=pygame.Rect(blue_offset_x, slider_y, slider_width, 20),
+            start_value=0.0,
+            value_range=(0.0, 1.0),
+            manager=ui_manager,
+        )
+        blue_tick_label = pygame_gui.elements.UILabel(
+            relative_rect=pygame.Rect(blue_offset_x + slider_width + 5, slider_y, 45, 20),
+            text="t=0",
+            manager=ui_manager,
+        )
+        blue_live_btn = pygame_gui.elements.UIButton(
+            relative_rect=pygame.Rect(blue_offset_x + slider_width + 50, slider_y, 50, 20),
+            text="LIVE",
+            manager=ui_manager,
+        )
+
+        # Store references for event handling
+        sliders_and_buttons = {
+            Team.RED: (red_slider, red_tick_label, red_live_btn),
+            Team.BLUE: (blue_slider, blue_tick_label, blue_live_btn),
+        }
 
     # Selection indicator label (hidden when no selection)
+    selection_label_x = god_offset_x if god_offset_x is not None else view_offset_x
     selection_label = pygame_gui.elements.UILabel(
-        relative_rect=pygame.Rect(god_offset_x, slider_y, map_pixel_size, 20),
+        relative_rect=pygame.Rect(selection_label_x, slider_y, map_pixel_size, 20),
         text="",
         manager=ui_manager,
     )
@@ -493,13 +664,7 @@ def main() -> None:
 
     tick_interval = 200
     last_tick = pygame.time.get_ticks()
-
-    red_view = PlayerView(knowledge=PlayerKnowledge(team=Team.RED, grid_width=args.width, grid_height=args.height, tick=state.tick))
-    blue_view = PlayerView(knowledge=PlayerKnowledge(team=Team.BLUE, grid_width=args.width, grid_height=args.height, tick=state.tick))
-    views = {
-        Team.RED: red_view,
-        Team.BLUE: blue_view,
-    }
+    last_knowledge_poll = pygame.time.get_ticks()
 
     running = True
     while running:
@@ -515,26 +680,32 @@ def main() -> None:
 
             # Handle pygame_gui button clicks
             elif event.type == pygame_gui.UI_BUTTON_PRESSED:
-                if event.ui_element == red_live_btn:
-                    views[Team.RED].freeze_frame = None
-                elif event.ui_element == blue_live_btn:
-                    views[Team.BLUE].freeze_frame = None
-                elif event.ui_element == issue_plan_btn:
-                    # Issue plan for the active team
-                    for team in [Team.RED, Team.BLUE]:
+                # Handle live buttons for all teams
+                for team, (slider, tick_label, live_btn) in sliders_and_buttons.items():
+                    if event.ui_element == live_btn:
+                        views[team].freeze_frame = None
+                        break
+
+                if event.ui_element == issue_plan_btn:
+                    # Issue plan for the active team using client interface
+                    for team in views.keys():
                         view = views[team]
                         if (
                             view.working_plan is not None
                             and view.working_plan.orders
                             and view.selected_unit is not None
                         ):
-                            view.selected_unit.plan = view.working_plan
-                            view.selected_unit = None
-                            view.working_plan = None
+                            # Use client interface to set the plan
+                            success = client.set_plan(team, view.selected_unit.id, view.working_plan)
+                            if success:
+                                view.selected_unit = None
+                                view.working_plan = None
+                            else:
+                                print(f"Failed to set plan for unit {view.selected_unit.id}")
                             break
                 elif event.ui_element == clear_plan_btn:
                     # Clear plan for the active team
-                    for team in [Team.RED, Team.BLUE]:
+                    for team in views.keys():
                         view = views[team]
                         if view.selected_unit is not None:
                             view.working_plan = Plan(interrupts=make_default_interrupts())
@@ -542,12 +713,12 @@ def main() -> None:
 
             # Handle slider value changes
             elif event.type == pygame_gui.UI_HORIZONTAL_SLIDER_MOVED:
-                if event.ui_element == red_slider:
-                    if state.tick > 0:
-                        views[Team.RED].freeze_frame = int(event.value * state.tick)
-                elif event.ui_element == blue_slider:
-                    if state.tick > 0:
-                        views[Team.BLUE].freeze_frame = int(event.value * state.tick)
+                for team, (slider, tick_label, live_btn) in sliders_and_buttons.items():
+                    if event.ui_element == slider:
+                        current_tick = views[team].knowledge.tick
+                        if current_tick > 0:
+                            views[team].freeze_frame = int(event.value * current_tick)
+                        break
 
             # Handle map clicks for unit selection and waypoints
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
@@ -557,96 +728,155 @@ def main() -> None:
                 if ui_manager.get_hovering_any_element():
                     continue
 
-                # Check RED player view for unit selection or target
-                grid_pos = screen_to_grid(
-                    mx,
-                    my,
-                    red_offset_x,
-                    views_offset_y,
-                    state.grid_width,
-                    state.grid_height,
-                )
-                red_view = views[Team.RED]
-                # Only allow interaction when viewing live (not a freeze frame)
-                if grid_pos is not None and red_view.freeze_frame is None:
-                    if red_view.selected_unit is not None:
-                        # Append Move order to working plan
-                        if red_view.working_plan is None:
-                            red_view.working_plan = Plan(
-                                interrupts=make_default_interrupts()
+                # Handle clicks for each visible team view
+                if mode == "client":
+                    # Client mode: single team view
+                    assert client_team is not None
+                    team = client_team
+                    view = views[team]
+                    grid_pos = screen_to_grid(
+                        mx,
+                        my,
+                        view_offset_x,
+                        views_offset_y,
+                        view.knowledge.grid_width,
+                        view.knowledge.grid_height,
+                    )
+                    if grid_pos is not None and view.freeze_frame is None:
+                        if view.selected_unit is not None:
+                            # Append Move order to working plan
+                            if view.working_plan is None:
+                                view.working_plan = Plan(
+                                    interrupts=make_default_interrupts()
+                                )
+                            view.working_plan.orders.append(Move(target=grid_pos))
+                        else:
+                            # Try to select a unit
+                            unit = find_unit_at_base_from_knowledge(
+                                view.knowledge, grid_pos, team, state
                             )
-                        red_view.working_plan.orders.append(Move(target=grid_pos))
-                    else:
-                        # Try to select a unit
-                        unit = find_unit_at_base(state, grid_pos, Team.RED)
-                        if unit is not None:
-                            red_view.selected_unit = unit
-                            # Initialize working plan when selecting a unit
-                            red_view.working_plan = Plan(
-                                interrupts=make_default_interrupts()
+                            if unit is not None:
+                                view.selected_unit = unit
+                                view.working_plan = Plan(
+                                    interrupts=make_default_interrupts()
+                                )
+                else:
+                    # Local/server mode: check both RED and BLUE views
+                    # Check RED player view for unit selection or target
+                    grid_pos = screen_to_grid(
+                        mx,
+                        my,
+                        red_offset_x,
+                        views_offset_y,
+                        state.grid_width,  # type: ignore
+                        state.grid_height,  # type: ignore
+                    )
+                    red_view = views[Team.RED]
+                    # Only allow interaction when viewing live (not a freeze frame)
+                    if grid_pos is not None and red_view.freeze_frame is None:
+                        if red_view.selected_unit is not None:
+                            # Append Move order to working plan
+                            if red_view.working_plan is None:
+                                red_view.working_plan = Plan(
+                                    interrupts=make_default_interrupts()
+                                )
+                            red_view.working_plan.orders.append(Move(target=grid_pos))
+                        else:
+                            # Try to select a unit
+                            unit = find_unit_at_base_from_knowledge(
+                                red_view.knowledge, grid_pos, Team.RED, state
                             )
+                            if unit is not None:
+                                red_view.selected_unit = unit
+                                # Initialize working plan when selecting a unit
+                                red_view.working_plan = Plan(
+                                    interrupts=make_default_interrupts()
+                                )
 
-                # Check BLUE player view for unit selection or target
-                grid_pos = screen_to_grid(
-                    mx,
-                    my,
-                    blue_offset_x,
-                    views_offset_y,
-                    state.grid_width,
-                    state.grid_height,
-                )
-                blue_view = views[Team.BLUE]
-                # Only allow interaction when viewing live (not a freeze frame)
-                if grid_pos is not None and blue_view.freeze_frame is None:
-                    if blue_view.selected_unit is not None:
-                        # Append Move order to working plan
-                        if blue_view.working_plan is None:
-                            blue_view.working_plan = Plan(
-                                interrupts=make_default_interrupts()
+                    # Check BLUE player view for unit selection or target
+                    grid_pos = screen_to_grid(
+                        mx,
+                        my,
+                        blue_offset_x,  # type: ignore
+                        views_offset_y,
+                        state.grid_width,  # type: ignore
+                        state.grid_height,  # type: ignore
+                    )
+                    blue_view = views[Team.BLUE]
+                    # Only allow interaction when viewing live (not a freeze frame)
+                    if grid_pos is not None and blue_view.freeze_frame is None:
+                        if blue_view.selected_unit is not None:
+                            # Append Move order to working plan
+                            if blue_view.working_plan is None:
+                                blue_view.working_plan = Plan(
+                                    interrupts=make_default_interrupts()
+                                )
+                            blue_view.working_plan.orders.append(Move(target=grid_pos))
+                        else:
+                            # Try to select a unit
+                            unit = find_unit_at_base_from_knowledge(
+                                blue_view.knowledge, grid_pos, Team.BLUE, state
                             )
-                        blue_view.working_plan.orders.append(Move(target=grid_pos))
-                    else:
-                        # Try to select a unit
-                        unit = find_unit_at_base(state, grid_pos, Team.BLUE)
-                        if unit is not None:
-                            blue_view.selected_unit = unit
-                            # Initialize working plan when selecting a unit
-                            blue_view.working_plan = Plan(
-                                interrupts=make_default_interrupts()
-                            )
+                            if unit is not None:
+                                blue_view.selected_unit = unit
+                                # Initialize working plan when selecting a unit
+                                blue_view.working_plan = Plan(
+                                    interrupts=make_default_interrupts()
+                                )
 
-        # Game tick
-        if current_time - last_tick >= tick_interval:
-            tick_game(state)
-            for view in views.values():
-                view.knowledge.tick_knowledge(state)
-            last_tick = current_time
+        # Game tick or knowledge polling
+        if mode in ["local", "server"]:
+            # Local/server mode: tick the game
+            assert state is not None
+            if current_time - last_tick >= tick_interval:
+                tick_game(state)
+                for view in views.values():
+                    view.knowledge.tick_knowledge(state)
+                last_tick = current_time
+        else:
+            # Client mode: poll for knowledge updates
+            assert client_team is not None
+            if current_time - last_knowledge_poll >= 100:  # Poll every 100ms
+                try:
+                    team = client_team
+                    current_tick = views[team].knowledge.tick
+                    new_knowledge = client.get_knowledge(team, current_tick + 1)
+                    views[team].knowledge = new_knowledge
+                except Exception as e:
+                    # Ignore polling errors (server might not have new data yet)
+                    pass
+                last_knowledge_poll = current_time
 
         # Render
         screen.fill((0, 0, 0))
 
-        # Draw game views (these are still custom pygame rendering)
-        draw_player_view(screen, views[Team.RED], Team.RED, red_offset_x, views_offset_y)
-        draw_god_view(screen, state, god_offset_x, views_offset_y)
-        draw_player_view(screen, views[Team.BLUE], Team.BLUE, blue_offset_x, views_offset_y)
+        # Draw game views based on mode
+        if mode == "client":
+            # Client mode: only show the player's team view
+            assert client_team is not None
+            team = client_team
+            draw_player_view(screen, views[team], team, view_offset_x, views_offset_y)
+        else:
+            # Local/server mode: show all three views
+            assert state is not None
+            assert god_offset_x is not None
+            assert blue_offset_x is not None
+            draw_player_view(screen, views[Team.RED], Team.RED, red_offset_x, views_offset_y)
+            draw_god_view(screen, state, god_offset_x, views_offset_y)
+            draw_player_view(screen, views[Team.BLUE], Team.BLUE, blue_offset_x, views_offset_y)
 
         # Update slider positions and labels to reflect current state
-        if state.tick > 0:
-            red_view_tick = views[Team.RED].freeze_frame
-            if red_view_tick is None:
-                red_slider.set_current_value(1.0)
-                red_tick_label.set_text(f"t={state.tick}")
-            else:
-                red_slider.set_current_value(red_view_tick / state.tick)
-                red_tick_label.set_text(f"t={red_view_tick}")
-
-            blue_view_tick = views[Team.BLUE].freeze_frame
-            if blue_view_tick is None:
-                blue_slider.set_current_value(1.0)
-                blue_tick_label.set_text(f"t={state.tick}")
-            else:
-                blue_slider.set_current_value(blue_view_tick / state.tick)
-                blue_tick_label.set_text(f"t={blue_view_tick}")
+        for team, (slider, tick_label, live_btn) in sliders_and_buttons.items():
+            view = views[team]
+            current_tick = view.knowledge.tick
+            if current_tick > 0:
+                view_tick = view.freeze_frame
+                if view_tick is None:
+                    slider.set_current_value(1.0)
+                    tick_label.set_text(f"t={current_tick}")
+                else:
+                    slider.set_current_value(view_tick / current_tick)
+                    tick_label.set_text(f"t={view_tick}")
 
         # Plan area layout
         plan_y = slider_y + 30
@@ -655,7 +885,7 @@ def main() -> None:
 
         # Find which team (if any) has a selected unit
         active_team: Team | None = None
-        for team in [Team.RED, Team.BLUE]:
+        for team in views.keys():
             if views[team].selected_unit is not None:
                 active_team = team
                 break
@@ -665,9 +895,12 @@ def main() -> None:
             selected_unit = view.selected_unit
             assert selected_unit is not None  # for type checker
             team_name = active_team.value
-            plan_offset_x = (
-                red_offset_x if active_team == Team.RED else blue_offset_x
-            )
+            if mode == "client":
+                plan_offset_x = view_offset_x
+            else:
+                plan_offset_x = (
+                    red_offset_x if active_team == Team.RED else blue_offset_x  # type: ignore
+                )
 
             # Update selection label
             selection_label.set_text(
