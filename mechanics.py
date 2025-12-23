@@ -87,6 +87,7 @@ class Move(Order):
             unit.pos = Pos(unit.pos.x, unit.pos.y + dy)
 
 
+# TODO: I'm rusty on contra/covariance, but I worry that this is wrong.
 T = TypeVar('T', covariant=True)
 
 
