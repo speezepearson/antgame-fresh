@@ -221,7 +221,6 @@ def draw_god_view(
     pygame.draw.rect(surface, (30, 30, 30), bg_rect)
 
     knowledge = god_knowledge(state)
-    # breakpoint()
     draw_player_view(surface, PlayerView(knowledge), Team.RED, offset_x, offset_y)
 
     # draw_grid(surface, offset_x, offset_y, state.grid_width, state.grid_height)
@@ -288,9 +287,9 @@ def draw_player_view(
                         offset_y,
                     )
                 elif isinstance(contents, UnitPresent):
-                    draw_unit_at(surface, contents.team, pos, offset_x, offset_y, outline_only=pos not in cur_observations)
+                    draw_unit_at(surface, contents.team, pos, offset_x, offset_y, outline_only=t < view_t-1)
                 elif isinstance(contents, FoodPresent):
-                    draw_food(surface, {pos: contents.count}, offset_x, offset_y, outline_only=pos not in cur_observations)
+                    draw_food(surface, {pos: contents.count}, offset_x, offset_y, outline_only=t < view_t-1)
 
     else:
         for pos, contents_list in view.knowledge.all_observations.get(freeze_frame, {}).items():
@@ -312,7 +311,7 @@ def draw_player_view(
     # Draw predicted positions for units with expected trajectories
     for trajectory in view.knowledge.expected_trajectories.values():
         # Calculate which position in trajectory corresponds to view_t
-        trajectory_index = view_t - trajectory.start_tick
+        trajectory_index = view_t - trajectory.start_tick - 1
         if 0 <= trajectory_index:
             predicted_pos = trajectory.positions[min(trajectory_index, len(trajectory.positions) - 1)]
             draw_unit_at(surface, team, predicted_pos, offset_x, offset_y, outline_only=True)

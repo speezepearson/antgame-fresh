@@ -29,16 +29,6 @@ class PlayerKnowledge:
     expected_trajectories: dict[UnitId, ExpectedTrajectory] = field(default_factory=dict)
     last_observations: LastObservations = field(default_factory=dict)
 
-    def add_raw_observations(self, game: GameState, observations: RawObservations) -> None:
-        self.all_observations.setdefault(game.tick, {}).update(observations)
-        new_keys = set(observations.keys()) - set(self.last_observations.keys())
-        if new_keys: print('new_keys', ' '.join(f'{xy.x},{xy.y}' for xy in new_keys))
-        for pos, contents_list in observations.items():
-            self.last_observations[pos] = (game.tick, contents_list)
-            for contents in contents_list:
-                if isinstance(contents, UnitPresent):
-                    self.last_seen[contents.unit_id] = (game.tick, [u for u in game.units if u.id ==contents.unit_id][0])
-
     def merge_observation_log(self, log: ObservationLog) -> None:
         """Merge a unit's observations into the player's knowledge."""
         for timestamp, raw_observations in log.items():
@@ -64,16 +54,18 @@ class PlayerKnowledge:
     def tick_knowledge(self, tick: Timestamp, new_units_in_base: list[Unit]) -> None:
         self.tick = tick
         self.own_units_in_base = new_units_in_base
+        self.last_seen.update({unit.id: (tick, unit) for unit in new_units_in_base})
         self.siphon_unit_logs()
         self.compute_expected_trajectories()
 
     def compute_expected_trajectories(self) -> None:
-        currently_visible_unit_ids = {
-            content.unit_id
-            for contents in self.all_observations.get(self.tick, {}).values()
-            for content in contents
-            if isinstance(content, UnitPresent)
-        }
+        # currently_visible_unit_ids = {
+        #     content.unit_id
+        #     for contents in self.all_observations.get(self.tick, {}).values()
+        #     for content in contents
+        #     if isinstance(content, UnitPresent)
+        # }
+        currently_visible_unit_ids = {unit.id for unit in self.own_units_in_base}
 
         # Compute last known trajectories for units not currently visible
         for tick, unit in self.last_seen.values():

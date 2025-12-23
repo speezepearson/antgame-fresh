@@ -10,7 +10,7 @@ import requests
 
 from core import Pos, Timestamp
 from knowledge import PlayerKnowledge
-from mechanics import GameState, Plan, Team, UnitId
+from mechanics import GameState, Plan, Team, Unit, UnitId
 
 
 class GameClient(ABC):
@@ -173,6 +173,11 @@ class RemoteGameClient(GameClient):
                 observations[pos] = contents
             all_observations[tick] = observations
 
+        # Deserialize last_seen
+        last_seen: dict[UnitId, tuple[Timestamp, Unit]] = {}
+        for unit_id, (tick, unit) in data.get("last_seen", {}).items():
+            last_seen[UnitId(unit_id)] = (tick, self._deserialize_unit(unit))
+
         # Deserialize last_observations
         last_observations: dict[Pos, tuple[Timestamp, list[CellContents]]] = {}
         for pos_str, (tick, contents_list) in data.get("last_observations", {}).items():
@@ -199,6 +204,7 @@ class RemoteGameClient(GameClient):
             grid_height=data["grid_height"],
             tick=data["tick"],
             all_observations=all_observations,
+            last_seen=last_seen,
             last_observations=last_observations,
             own_units_in_base=own_units_in_base,
         )

@@ -116,6 +116,13 @@ def serialize_knowledge(knowledge: PlayerKnowledge) -> dict[str, Any]:
             observations[pos_str] = [serialize_cell_contents(c) for c in contents_list]
         all_observations[str(tick)] = observations
 
+    last_seen = {}
+    for unit_id, (tick, unit) in knowledge.last_seen.items():
+        last_seen[unit_id] = {
+            "tick": tick,
+            "unit": serialize_unit(unit),
+        }
+
     # Serialize last_observations
     last_observations = {}
     for pos, (tick, contents_list) in knowledge.last_observations.items():
@@ -134,6 +141,7 @@ def serialize_knowledge(knowledge: PlayerKnowledge) -> dict[str, Any]:
         "grid_height": knowledge.grid_height,
         "tick": knowledge.tick,
         "all_observations": all_observations,
+        "last_seen": last_seen,
         "last_observations": last_observations,
         "own_units_in_base": own_units_in_base,
     }
