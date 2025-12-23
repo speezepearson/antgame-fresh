@@ -1,6 +1,7 @@
 """Pygame rendering and UI."""
 
 from __future__ import annotations
+from typing import Any
 import pygame
 
 from core import Pos, Region
@@ -16,7 +17,7 @@ TILE_SIZE = 16
 
 
 # Plan display helpers
-def _describe_condition(condition: Condition) -> str:
+def _describe_condition(condition: Condition[Any]) -> str:
     """Convert a condition to a human-readable string."""
     if isinstance(condition, EnemyInRangeCondition):
         return f"enemy within {condition.distance}"

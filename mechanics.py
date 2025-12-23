@@ -4,7 +4,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Protocol, TypeVar, Generic, Callable
+from typing import Protocol, TypeVar, Generic, Callable, Any
 import random
 
 from core import Timestamp, Pos, Region
@@ -179,7 +179,7 @@ class Plan:
     """A plan consisting of a queue of orders and interrupt handlers."""
 
     orders: list[Order] = field(default_factory=list)
-    interrupts: list[Interrupt] = field(default_factory=list)
+    interrupts: list[Interrupt[Any]] = field(default_factory=list)
 
     def current_order(self) -> Order | None:
         """Get the current order (first in queue)."""
