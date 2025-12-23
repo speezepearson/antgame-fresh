@@ -11,10 +11,24 @@ import random
 import numpy as np
 
 from core import Timestamp, Pos, Region
-from mechanics import BasePresent, CellContents, Empty, FoodPresent, GameState, ObservationLog, RawObservations, Team, Unit, UnitId, UnitPresent, tick_game
+from mechanics import (
+    BasePresent,
+    CellContents,
+    Empty,
+    FoodPresent,
+    GameState,
+    ObservationLog,
+    RawObservations,
+    Team,
+    Unit,
+    UnitId,
+    UnitPresent,
+    tick_game,
+)
 from perlin import perlin
 
 LastObservations = dict[Pos, tuple[Timestamp, list[CellContents]]]
+
 
 @dataclass
 class PlayerKnowledge:
@@ -22,27 +36,36 @@ class PlayerKnowledge:
     grid_width: int
     grid_height: int
     tick: Timestamp
-    
 
     all_observations: ObservationLog = field(default_factory=dict)
     last_seen: dict[UnitId, tuple[Timestamp, Unit]] = field(default_factory=dict)
-    expected_trajectories: dict[UnitId, ExpectedTrajectory] = field(default_factory=dict)
+    expected_trajectories: dict[UnitId, ExpectedTrajectory] = field(
+        default_factory=dict
+    )
     last_observations: LastObservations = field(default_factory=dict)
 
-    def add_raw_observations(self, game: GameState, observations: RawObservations) -> None:
+    def add_raw_observations(
+        self, game: GameState, observations: RawObservations
+    ) -> None:
         self.all_observations.setdefault(game.tick, {}).update(observations)
         for pos, contents_list in observations.items():
             self.last_observations[pos] = (game.tick, contents_list)
             for contents in contents_list:
                 if isinstance(contents, UnitPresent):
-                    self.last_seen[contents.unit_id] = (game.tick, [u for u in game.units if u.id ==contents.unit_id][0])
+                    self.last_seen[contents.unit_id] = (
+                        game.tick,
+                        game.units[contents.unit_id],
+                    )
 
     def merge_observation_log(self, log: ObservationLog) -> None:
         """Merge a unit's observations into the player's knowledge."""
         for timestamp, raw_observations in log.items():
             self.all_observations.setdefault(timestamp, {}).update(raw_observations)
             for pos, contents_list in raw_observations.items():
-                if not (pos in self.last_observations and self.last_observations[pos][0] >= timestamp):
+                if not (
+                    pos in self.last_observations
+                    and self.last_observations[pos][0] >= timestamp
+                ):
                     self.last_observations[pos] = (timestamp, contents_list)
 
     def record_observations_from_bases(self, game: GameState) -> None:
@@ -51,7 +74,7 @@ class PlayerKnowledge:
 
         # Add observations from units currently in the base
         # TODO: can we just skip this since we'll immediately siphon their logs anyway?
-        for unit in game.units:
+        for unit in game.units.values():
             if unit.team == self.team and unit.is_in_base(game):
                 unit_observations = game.observe_from_position(
                     unit.pos, unit.visibility_radius
@@ -60,7 +83,9 @@ class PlayerKnowledge:
 
         self.add_raw_observations(game, observations)
 
-    def observe_from_base_region(self, game: GameState) -> dict[Pos, list[CellContents]]:
+    def observe_from_base_region(
+        self, game: GameState
+    ) -> dict[Pos, list[CellContents]]:
         """Observe only the tiles within the base region itself."""
         region = game.get_base_region(self.team)
         observations: dict[Pos, list[CellContents]] = {}
@@ -70,19 +95,17 @@ class PlayerKnowledge:
         return observations
 
     def siphon_unit_logs(self, game: GameState) -> None:
-        for unit in game.units:
+        for unit in game.units.values():
             if unit.team == self.team and unit.is_in_base(game):
                 self.merge_observation_log(unit.observation_log)
                 # Clear unit's logbook and update sync time
                 unit.observation_log.clear()
                 unit.last_sync_tick = game.tick
 
-
     def get_currently_visible_cells(self) -> set[Pos]:
         """Get all cells currently visible to the player (from their observations at current tick)."""
         last_tick = max(self.all_observations.keys())
         return set(self.all_observations.get(last_tick, {}).keys())
-
 
     def tick_knowledge(self, state: GameState) -> None:
         self.siphon_unit_logs(state)
@@ -94,14 +117,16 @@ class PlayerKnowledge:
         visible = self.get_currently_visible_cells()
 
         # Compute last known trajectories for units not currently visible
-        for unit in state.units:
+        for unit in state.units.values():
             if unit.team != self.team:
                 continue
 
             if unit.pos in visible:
                 # Unit is visible - clear any trajectory
                 self.expected_trajectories.pop(unit.id, None)
-            elif unit.id in self.last_seen and unit.id not in self.expected_trajectories:
+            elif (
+                unit.id in self.last_seen and unit.id not in self.expected_trajectories
+            ):
                 last_seen_tick, last_seen_unit = self.last_seen[unit.id]
                 self.expected_trajectories[unit.id] = compute_expected_trajectory(
                     last_seen_unit, state, start_tick=last_seen_tick
@@ -132,14 +157,16 @@ def compute_expected_trajectory(
     sim_state = GameState(
         grid_width=state.grid_width,
         grid_height=state.grid_height,
-        base_regions={team: Region(frozenset([Pos(0,0)])) for team in Team}, # TODO: hack
+        base_regions={
+            team: Region(frozenset([Pos(0, 0)])) for team in Team
+        },  # TODO: hack
         tick=start_tick,
-        units=[deepcopy(unit)],
+        units={unit.id: deepcopy(unit)},
         food={},  # No food in simulation
     )
 
     positions = [unit.pos]
-    sim_unit = sim_state.units[0]
+    sim_unit = sim_state.units[unit.id]
 
     for _ in range(max_ticks):
         if not sim_unit.plan.orders:

@@ -435,6 +435,7 @@ def _generate_food(
 RawObservations = dict[Pos, list[CellContents]]
 ObservationLog = dict[Timestamp, RawObservations]
 
+
 @dataclass
 class Unit:
     id: UnitId
@@ -484,20 +485,25 @@ def make_game(
         grid_height=grid_height,
     )
 
-    units = [
-        *[Unit(_generate_unit_id(), Team.RED, pos, pos) for pos in random.sample(list(red_base.cells), 3)],
-        *[Unit(_generate_unit_id(), Team.BLUE, pos, pos) for pos in random.sample(list(blue_base.cells), 3)],
+    units_list = [
+        *[
+            Unit(_generate_unit_id(), Team.RED, pos, pos)
+            for pos in random.sample(list(red_base.cells), 3)
+        ],
+        *[
+            Unit(_generate_unit_id(), Team.BLUE, pos, pos)
+            for pos in random.sample(list(blue_base.cells), 3)
+        ],
     ]
     return GameState(
         grid_width=grid_width,
         grid_height=grid_height,
         base_regions={Team.RED: red_base, Team.BLUE: blue_base},
-        units=units,
+        units={unit.id: unit for unit in units_list},
         food=_generate_food(
             food_config, grid_width=grid_width, grid_height=grid_height
         ),
     )
-
 
 
 @dataclass
@@ -507,15 +513,27 @@ class GameState:
     base_regions: dict[Team, Region]
 
     tick: Timestamp = 0
-    units: list[Unit] = field(default_factory=list)
+    units: dict[UnitId, Unit] = field(default_factory=dict)
     food: dict[Pos, int] = field(default_factory=dict)
 
     def get_base_region(self, team: Team) -> Region:
         """Get a team's base region."""
         return self.base_regions[team]
 
+    def upsert_units(self, *units: Unit) -> None:
+        for unit in units:
+            self.units[unit.id] = unit
 
-    def observe_from_position(self, observer_pos: Pos, visibility_radius: int) -> dict[Pos, list[CellContents]]:
+    def kill_units(self, *unit_ids: UnitId) -> None:
+        for unit_id in unit_ids:
+            unit = self.units.pop(unit_id)
+            if unit.carrying_food > 0:
+                self.food.setdefault(unit.pos, 0)
+                self.food[unit.pos] += unit.carrying_food
+
+    def observe_from_position(
+        self, observer_pos: Pos, visibility_radius: int
+    ) -> dict[Pos, list[CellContents]]:
         """Return what can be observed from a given position."""
         observations: dict[Pos, list[CellContents]] = {}
 
@@ -531,13 +549,12 @@ class GameState:
 
         return observations
 
-
     def get_contents_at(self, pos: Pos) -> list[CellContents]:
         """Determine what's actually at a position right now."""
         contents: list[CellContents] = []
 
         # Check for units
-        for unit in self.units:
+        for unit in self.units.values():
             if unit.pos == pos:
                 contents.append(UnitPresent(unit.team, unit.id))
 
@@ -561,12 +578,12 @@ class GameState:
 def tick_game(state: GameState) -> None:
     """Advance the game by one tick."""
     # 1. Record observations for all units
-    for unit in state.units:
+    for unit in state.units.values():
         observations = state.observe_from_position(unit.pos, unit.visibility_radius)
         unit.observation_log[state.tick] = observations
 
     # 2. Check interrupts for each unit
-    for unit in state.units:
+    for unit in state.units.values():
         # Get current observations for this unit
         observations = state.observe_from_position(unit.pos, unit.visibility_radius)
 
@@ -582,7 +599,7 @@ def tick_game(state: GameState) -> None:
                 break  # Only first matching interrupt per tick
 
     # 3. Execute current order for each unit
-    for unit in state.units:
+    for unit in state.units.values():
         current_order = unit.plan.current_order()
         if current_order is None:
             continue
@@ -596,26 +613,23 @@ def tick_game(state: GameState) -> None:
 
     # 3.5. Check for mutual annihilation (opposing units on same cell)
     units_by_position: dict[Pos, list[Unit]] = {}
-    for unit in state.units:
+    for unit in state.units.values():
         if unit.pos not in units_by_position:
             units_by_position[unit.pos] = []
         units_by_position[unit.pos].append(unit)
 
     # Remove units that share cells with enemies
-    units_to_remove: list[Unit] = []
+    units_to_remove: set[UnitId] = set()
     for pos, units_at_pos in units_by_position.items():
         if len(units_at_pos) > 1:
             # Check if there are enemies at this position
             teams_at_pos = {unit.team for unit in units_at_pos}
             if len(teams_at_pos) > 1:
                 # Multiple teams at same position - mutual annihilation
-                units_to_remove.extend(units_at_pos)
+                units_to_remove.update([unit.id for unit in units_at_pos])
 
-    state.units = [u for u in state.units if u not in units_to_remove]
-    for u in units_to_remove:
-        if u.carrying_food > 0:
-            state.food.setdefault(u.pos, 0)
-            state.food[u.pos] += u.carrying_food
+    print("remove", units_to_remove)
+    state.kill_units(*units_to_remove)
 
     # 3.75. Process food at bases to spawn new units
     for team in [Team.RED, Team.BLUE]:
@@ -623,19 +637,26 @@ def tick_game(state: GameState) -> None:
         unoccupied_cells = [
             cell
             for cell in base_region.cells
-            if cell not in {unit.pos for unit in state.units}
+            if cell not in {unit.pos for unit in state.units.values()}
         ]
-        for u in state.units:
+        new_units: list[Unit] = []
+        for u in state.units.values():
             if u.team == team and base_region.contains(u.pos):
                 while unoccupied_cells and u.carrying_food > 0:
                     closest_cell = min(
                         unoccupied_cells,
                         key=lambda cell: u.pos.manhattan_distance(cell),
                     )
-                    state.units.append(
-                        Unit(id=_generate_unit_id(), team=u.team, pos=closest_cell, original_pos=closest_cell)
+                    new_units.append(
+                        Unit(
+                            id=_generate_unit_id(),
+                            team=u.team,
+                            pos=closest_cell,
+                            original_pos=closest_cell,
+                        )
                     )
                     unoccupied_cells.remove(closest_cell)
                     u.carrying_food -= 1
+        state.upsert_units(*new_units)
 
     state.tick += 1

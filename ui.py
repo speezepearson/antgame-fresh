@@ -41,6 +41,7 @@ from mechanics import (
 # Rendering Constants
 TILE_SIZE = 16
 
+
 @dataclass
 class PlayerView:
     knowledge: PlayerKnowledge
@@ -67,7 +68,9 @@ def format_plan(plan: Plan, unit: Unit) -> list[str]:
         lines.append("Interrupts:")
         for interrupt in plan.interrupts:
             condition_desc = interrupt.condition.description
-            lines.append(f"  If {condition_desc}: {'; '.join([action.description for action in interrupt.actions])}")
+            lines.append(
+                f"  If {condition_desc}: {'; '.join([action.description for action in interrupt.actions])}"
+            )
 
     return lines
 
@@ -103,7 +106,7 @@ def draw_base_cell(
     team: Team,
     offset_x: int,
     offset_y: int,
-    outline_only: bool = False, # TODO
+    outline_only: bool = False,  # TODO
 ) -> None:
     """Draw a base region with a faint background tint."""
     # Faint background color for base cells
@@ -140,7 +143,11 @@ def draw_unit_at(
 
 
 def draw_food(
-    surface: pygame.Surface, food: dict[Pos, int], offset_x: int, offset_y: int, outline_only: bool = False
+    surface: pygame.Surface,
+    food: dict[Pos, int],
+    offset_x: int,
+    offset_y: int,
+    outline_only: bool = False,
 ) -> None:
     """Draw food as small green dots, with multiple items positioned non-overlapping."""
     radius = 3
@@ -186,22 +193,30 @@ def draw_food(
         for dx, dy in positions:
             if outline_only:
                 pygame.draw.circle(
-                    surface, (100, 255, 100), (tile_x + dx, tile_y + dy), radius, 1)
+                    surface, (100, 255, 100), (tile_x + dx, tile_y + dy), radius, 1
+                )
             else:
                 pygame.draw.circle(
                     surface, (100, 255, 100), (tile_x + dx, tile_y + dy), radius
                 )
 
+
 def god_knowledge(game: GameState) -> PlayerKnowledge:
-    observations = game.observe_from_position(Pos(0, 0), (game.grid_width+game.grid_height))
+    observations = game.observe_from_position(
+        Pos(0, 0), (game.grid_width + game.grid_height)
+    )
     return PlayerKnowledge(
         team=Team.RED,  # TODO: asymmetric
         grid_width=game.grid_width,
         grid_height=game.grid_height,
         tick=game.tick,
         all_observations={game.tick: observations},
-        last_observations={pos: (game.tick, contents_list) for pos, contents_list in observations.items()},
+        last_observations={
+            pos: (game.tick, contents_list)
+            for pos, contents_list in observations.items()
+        },
     )
+
 
 def draw_god_view(
     surface: pygame.Surface,
@@ -267,12 +282,22 @@ def draw_player_view(
         pygame.draw.rect(surface, (40, 40, 40), rect)
 
     # Redraw grid on top
-    draw_grid(surface, offset_x, offset_y, view.knowledge.grid_width, view.knowledge.grid_height)
+    draw_grid(
+        surface,
+        offset_x,
+        offset_y,
+        view.knowledge.grid_width,
+        view.knowledge.grid_height,
+    )
 
     if freeze_frame is None:
         for pos, (t, contents_list) in view.knowledge.last_observations.items():
-            if (freeze_frame is not None and t != view.knowledge.tick): continue
-            for contents in sorted(contents_list, key=lambda x: (isinstance(x, UnitPresent), isinstance(x, FoodPresent))):
+            if freeze_frame is not None and t != view.knowledge.tick:
+                continue
+            for contents in sorted(
+                contents_list,
+                key=lambda x: (isinstance(x, UnitPresent), isinstance(x, FoodPresent)),
+            ):
                 if isinstance(contents, BasePresent):
                     draw_base_cell(
                         surface,
@@ -282,13 +307,31 @@ def draw_player_view(
                         offset_y,
                     )
                 elif isinstance(contents, UnitPresent):
-                    draw_unit_at(surface, contents.team, pos, offset_x, offset_y, outline_only=pos not in cur_observations)
+                    draw_unit_at(
+                        surface,
+                        contents.team,
+                        pos,
+                        offset_x,
+                        offset_y,
+                        outline_only=pos not in cur_observations,
+                    )
                 elif isinstance(contents, FoodPresent):
-                    draw_food(surface, {pos: contents.count}, offset_x, offset_y, outline_only=pos not in cur_observations)
+                    draw_food(
+                        surface,
+                        {pos: contents.count},
+                        offset_x,
+                        offset_y,
+                        outline_only=pos not in cur_observations,
+                    )
 
     else:
-        for pos, contents_list in view.knowledge.all_observations.get(freeze_frame, {}).items():
-            for contents in sorted(contents_list, key=lambda x: (isinstance(x, UnitPresent), isinstance(x, FoodPresent))):
+        for pos, contents_list in view.knowledge.all_observations.get(
+            freeze_frame, {}
+        ).items():
+            for contents in sorted(
+                contents_list,
+                key=lambda x: (isinstance(x, UnitPresent), isinstance(x, FoodPresent)),
+            ):
                 if isinstance(contents, BasePresent):
                     draw_base_cell(
                         surface,
@@ -298,18 +341,34 @@ def draw_player_view(
                         offset_y,
                     )
                 elif isinstance(contents, UnitPresent):
-                    draw_unit_at(surface, contents.team, pos, offset_x, offset_y, outline_only=False)
+                    draw_unit_at(
+                        surface,
+                        contents.team,
+                        pos,
+                        offset_x,
+                        offset_y,
+                        outline_only=False,
+                    )
                 elif isinstance(contents, FoodPresent):
-                    draw_food(surface, {pos: contents.count}, offset_x, offset_y, outline_only=False)
-
+                    draw_food(
+                        surface,
+                        {pos: contents.count},
+                        offset_x,
+                        offset_y,
+                        outline_only=False,
+                    )
 
     # Draw predicted positions for units with expected trajectories
     for trajectory in view.knowledge.expected_trajectories.values():
         # Calculate which position in trajectory corresponds to view_t
         trajectory_index = view_t - trajectory.start_tick
         if 0 <= trajectory_index:
-            predicted_pos = trajectory.positions[min(trajectory_index, len(trajectory.positions) - 1)]
-            draw_unit_at(surface, team, predicted_pos, offset_x, offset_y, outline_only=True)
+            predicted_pos = trajectory.positions[
+                min(trajectory_index, len(trajectory.positions) - 1)
+            ]
+            draw_unit_at(
+                surface, team, predicted_pos, offset_x, offset_y, outline_only=True
+            )
 
 
 def screen_to_grid(
@@ -333,7 +392,7 @@ def screen_to_grid(
 def find_unit_at_base(state: GameState, pos: Pos, team: Team) -> Unit | None:
     """Find a unit of the given team at pos, only if inside their base region."""
     base_region = state.get_base_region(team)
-    for unit in state.units:
+    for unit in state.units.values():
         if unit.team == team and unit.pos == pos:
             if base_region.contains(unit.pos):
                 return unit
@@ -477,8 +536,22 @@ def main() -> None:
     tick_interval = 200
     last_tick = pygame.time.get_ticks()
 
-    red_view = PlayerView(knowledge=PlayerKnowledge(team=Team.RED, grid_width=args.width, grid_height=args.height, tick=state.tick))
-    blue_view = PlayerView(knowledge=PlayerKnowledge(team=Team.BLUE, grid_width=args.width, grid_height=args.height, tick=state.tick))
+    red_view = PlayerView(
+        knowledge=PlayerKnowledge(
+            team=Team.RED,
+            grid_width=args.width,
+            grid_height=args.height,
+            tick=state.tick,
+        )
+    )
+    blue_view = PlayerView(
+        knowledge=PlayerKnowledge(
+            team=Team.BLUE,
+            grid_width=args.width,
+            grid_height=args.height,
+            tick=state.tick,
+        )
+    )
     views = {
         Team.RED: red_view,
         Team.BLUE: blue_view,
@@ -520,7 +593,9 @@ def main() -> None:
                     for team in [Team.RED, Team.BLUE]:
                         view = views[team]
                         if view.selected_unit is not None:
-                            view.working_plan = Plan(interrupts=make_default_interrupts())
+                            view.working_plan = Plan(
+                                interrupts=make_default_interrupts()
+                            )
                             break
 
             # Handle slider value changes
@@ -609,9 +684,13 @@ def main() -> None:
         screen.fill((0, 0, 0))
 
         # Draw game views (these are still custom pygame rendering)
-        draw_player_view(screen, views[Team.RED], Team.RED, red_offset_x, views_offset_y)
+        draw_player_view(
+            screen, views[Team.RED], Team.RED, red_offset_x, views_offset_y
+        )
         draw_god_view(screen, state, god_offset_x, views_offset_y)
-        draw_player_view(screen, views[Team.BLUE], Team.BLUE, blue_offset_x, views_offset_y)
+        draw_player_view(
+            screen, views[Team.BLUE], Team.BLUE, blue_offset_x, views_offset_y
+        )
 
         # Update slider positions and labels to reflect current state
         if state.tick > 0:
@@ -648,9 +727,7 @@ def main() -> None:
             selected_unit = view.selected_unit
             assert selected_unit is not None  # for type checker
             team_name = active_team.value
-            plan_offset_x = (
-                red_offset_x if active_team == Team.RED else blue_offset_x
-            )
+            plan_offset_x = red_offset_x if active_team == Team.RED else blue_offset_x
 
             # Update selection label
             selection_label.set_text(
