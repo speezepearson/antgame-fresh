@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 from typing import Any
+import argparse
 import pygame
 
 from core import Pos, Region
@@ -9,6 +10,7 @@ from mechanics import (
     GameState, Team, BasePresent, UnitPresent, GRID_SIZE, Move, Plan, tick_game,
     Unit, Order, Condition, Action, Interrupt,
     EnemyInRangeCondition, BaseVisibleCondition, PositionReachedCondition,
+    FoodConfig,
 )
 
 
@@ -109,6 +111,56 @@ def draw_unit_at(
         pygame.draw.circle(surface, (255, 255, 0), (center_x, center_y), radius + 3, 2)
 
 
+def draw_food(surface: pygame.Surface, food: dict[Pos, int], offset_x: int, offset_y: int) -> None:
+    """Draw food as small green dots, with multiple items positioned non-overlapping."""
+    radius = 3
+
+    for pos, count in food.items():
+        tile_x = offset_x + pos.x * TILE_SIZE
+        tile_y = offset_y + pos.y * TILE_SIZE
+
+        if count == 1:
+            # Single item: center of tile
+            positions = [(TILE_SIZE // 2, TILE_SIZE // 2)]
+        elif count == 2:
+            # Two items: left and right
+            positions = [
+                (TILE_SIZE // 3, TILE_SIZE // 2),
+                (2 * TILE_SIZE // 3, TILE_SIZE // 2),
+            ]
+        elif count == 3:
+            # Three items: triangle pattern
+            positions = [
+                (TILE_SIZE // 2, TILE_SIZE // 3),           # top center
+                (TILE_SIZE // 3, 2 * TILE_SIZE // 3),       # bottom left
+                (2 * TILE_SIZE // 3, 2 * TILE_SIZE // 3),   # bottom right
+            ]
+        elif count == 4:
+            # Four items: corners
+            positions = [
+                (TILE_SIZE // 3, TILE_SIZE // 3),
+                (2 * TILE_SIZE // 3, TILE_SIZE // 3),
+                (TILE_SIZE // 3, 2 * TILE_SIZE // 3),
+                (2 * TILE_SIZE // 3, 2 * TILE_SIZE // 3),
+            ]
+        else:
+            # Five or more: 2x2 grid plus center
+            positions = [
+                (TILE_SIZE // 3, TILE_SIZE // 3),
+                (2 * TILE_SIZE // 3, TILE_SIZE // 3),
+                (TILE_SIZE // 3, 2 * TILE_SIZE // 3),
+                (2 * TILE_SIZE // 3, 2 * TILE_SIZE // 3),
+                (TILE_SIZE // 2, TILE_SIZE // 2),
+            ][:min(count, 5)]
+
+        for dx, dy in positions:
+            pygame.draw.circle(surface, (100, 255, 100), (tile_x + dx, tile_y + dy), radius)
+
+        # If more than 5, indicate with a brighter center dot
+        if count > 5:
+            pygame.draw.circle(surface, (150, 255, 150), (tile_x + TILE_SIZE // 2, tile_y + TILE_SIZE // 2), radius)
+
+
 def draw_god_view(
     surface: pygame.Surface,
     state: GameState,
@@ -123,6 +175,9 @@ def draw_god_view(
     draw_grid(surface, offset_x, offset_y, state.grid_width, state.grid_height)
     draw_base(surface, state.get_base_region(Team.RED), Team.RED, offset_x, offset_y)
     draw_base(surface, state.get_base_region(Team.BLUE), Team.BLUE, offset_x, offset_y)
+
+    # Draw food
+    draw_food(surface, state.food, offset_x, offset_y)
 
     for unit in state.units:
         draw_unit_at(
@@ -175,7 +230,10 @@ def draw_player_view(
                     if contents.team not in drawn_bases:
                         draw_base(surface, state.get_base_region(contents.team), contents.team, offset_x, offset_y)
                         drawn_bases.add(contents.team)
-        # Second pass: draw units on top
+        # Second pass: draw food in visible areas
+        visible_food = {pos: count for pos, count in state.food.items() if pos in observations}
+        draw_food(surface, visible_food, offset_x, offset_y)
+        # Third pass: draw units on top
         for pos, contents_list in observations.items():
             for contents in contents_list:
                 if isinstance(contents, UnitPresent):
@@ -253,6 +311,22 @@ def find_unit_at_base(state: GameState, pos: Pos, team: Team) -> Unit | None:
 
 
 def main() -> None:
+    # Parse command-line arguments
+    parser = argparse.ArgumentParser(description='Ant RTS Game')
+    parser.add_argument('--food-scale', type=float, default=10.0,
+                        help='Perlin noise scale for food generation (default: 10.0)')
+    parser.add_argument('--food-octaves', type=int, default=3,
+                        help='Perlin noise octaves for food generation (default: 3)')
+    parser.add_argument('--food-persistence', type=float, default=0.5,
+                        help='Perlin noise persistence for food generation (default: 0.5)')
+    parser.add_argument('--food-lacunarity', type=float, default=2.0,
+                        help='Perlin noise lacunarity for food generation (default: 2.0)')
+    parser.add_argument('--food-max-prob', type=float, default=0.1,
+                        help='Maximum probability of food in a cell (default: 0.1)')
+    parser.add_argument('--food-seed', type=int, default=None,
+                        help='Random seed for food generation (default: random)')
+    args = parser.parse_args()
+
     pygame.init()
 
     # Layout: RED view (with slider) | GOD view | BLUE view (with slider)
@@ -261,7 +335,15 @@ def main() -> None:
     slider_height = 30
 
     # Create the game state first to get grid dimensions
-    state = GameState()
+    food_config = FoodConfig(
+        scale=args.food_scale,
+        octaves=args.food_octaves,
+        persistence=args.food_persistence,
+        lacunarity=args.food_lacunarity,
+        max_prob=args.food_max_prob,
+        seed=args.food_seed,
+    )
+    state = GameState(food_config=food_config)
     map_pixel_size = state.grid_width * TILE_SIZE
 
     window_width = map_pixel_size * 3 + padding * 4

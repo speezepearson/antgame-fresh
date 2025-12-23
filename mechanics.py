@@ -6,12 +6,25 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Protocol, TypeVar, Generic, Callable, Any
 import random
+import numpy as np
+import noise  # type: ignore
 
 from core import Timestamp, Pos, Region
 
 
 # Game Constants
 GRID_SIZE = 32
+
+
+@dataclass
+class FoodConfig:
+    """Configuration for Perlin noise-based food generation."""
+    scale: float = 10.0
+    octaves: int = 3
+    persistence: float = 0.5
+    lacunarity: float = 2.0
+    max_prob: float = 0.1
+    seed: int | None = None
 
 
 class Team(Enum):
@@ -255,6 +268,56 @@ def _generate_random_base(seed_pos: Pos, target_size: int = 12, grid_width: int 
     return Region(frozenset(cells))
 
 
+def _generate_food(config: FoodConfig, grid_width: int = GRID_SIZE, grid_height: int = GRID_SIZE) -> dict[Pos, int]:
+    """Generate food locations using Perlin noise with Poisson-distributed counts.
+
+    Args:
+        config: FoodConfig with noise parameters
+        grid_width: Width of the grid (default: GRID_SIZE)
+        grid_height: Height of the grid (default: GRID_SIZE)
+
+    Returns:
+        A dict mapping Pos to food count at that position
+    """
+    # Set random seed if provided
+    seed = config.seed if config.seed is not None else random.randint(0, 1000000)
+    if config.seed is not None:
+        np.random.seed(config.seed)
+
+    food_counts: dict[Pos, int] = {}
+
+    for x in range(grid_width):
+        for y in range(grid_height):
+            # Generate Perlin noise value for this position
+            # Normalize coordinates by scale
+            noise_value = noise.pnoise2(
+                x / config.scale,
+                y / config.scale,
+                octaves=config.octaves,
+                persistence=config.persistence,
+                lacunarity=config.lacunarity,
+                repeatx=grid_width * 10,  # Large repeat to avoid tiling
+                repeaty=grid_height * 10,
+                base=seed,
+            )
+
+            # Perlin noise returns values in range [-1, 1], normalize to [0, 1]
+            normalized_value = (noise_value + 1) / 2
+
+            # Map to mean range [0, max_prob] for Poisson distribution
+            # max_prob now represents the maximum mean for the Poisson distribution
+            poisson_mean = normalized_value * config.max_prob
+
+            # Generate food count using Poisson distribution
+            food_count = int(np.random.poisson(poisson_mean))
+
+            # Only store non-zero counts
+            if food_count > 0:
+                food_counts[Pos(x, y)] = food_count
+
+    return food_counts
+
+
 @dataclass
 class Unit:
     team: Team
@@ -293,6 +356,10 @@ class GameState:
     # Grid dimensions
     grid_width: int = GRID_SIZE
     grid_height: int = GRID_SIZE
+    # Food locations on the grid with counts
+    food: dict[Pos, int] = field(default_factory=dict)
+    # Configuration for food generation
+    food_config: FoodConfig = field(default_factory=FoodConfig)
 
     def __post_init__(self) -> None:
         # Generate random base regions
@@ -327,6 +394,9 @@ class GameState:
         self.view_tick[Team.BLUE] = 0
         self.view_live[Team.RED] = True
         self.view_live[Team.BLUE] = True
+
+        # Generate food using Perlin noise
+        self.food = _generate_food(self.food_config, self.grid_width, self.grid_height)
 
         # Record initial observations from base regions
         self._record_observations_from_bases()
