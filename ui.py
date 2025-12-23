@@ -490,6 +490,8 @@ def main() -> None:
         state = make_game(
             grid_width=args.width, grid_height=args.height, food_config=food_config
         )
+        for unit in state.units:
+            unit.plan.interrupts = make_default_interrupts()
 
         # Initialize knowledge for both teams
         red_view = PlayerView(knowledge=PlayerKnowledge(team=Team.RED, grid_width=args.width, grid_height=args.height, tick=state.tick))
@@ -498,10 +500,6 @@ def main() -> None:
             Team.RED: red_view,
             Team.BLUE: blue_view,
         }
-
-        # Initialize knowledge with observations at tick 0
-        for view in views.values():
-            view.knowledge.tick_knowledge(state)
 
         # Create local client
         client = LocalGameClient(state, {Team.RED: red_view.knowledge, Team.BLUE: blue_view.knowledge})
