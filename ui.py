@@ -424,23 +424,6 @@ def main() -> None:
     slider_y = views_offset_y + map_pixel_size + 5
     slider_width = map_pixel_size - 100
 
-    # Create pygame_gui labels
-    red_label = pygame_gui.elements.UILabel(
-        relative_rect=pygame.Rect(red_offset_x, padding, 100, label_height),
-        text="RED'S MAP",
-        manager=ui_manager,
-    )
-    god_label = pygame_gui.elements.UILabel(
-        relative_rect=pygame.Rect(god_offset_x, padding, 120, label_height),
-        text="GOD'S EYE VIEW",
-        manager=ui_manager,
-    )
-    blue_label = pygame_gui.elements.UILabel(
-        relative_rect=pygame.Rect(blue_offset_x, padding, 100, label_height),
-        text="BLUE'S MAP",
-        manager=ui_manager,
-    )
-
     # Create time sliders for each team
     red_slider = pygame_gui.elements.UIHorizontalSlider(
         relative_rect=pygame.Rect(red_offset_x, slider_y, slider_width, 20),
