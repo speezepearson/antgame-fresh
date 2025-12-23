@@ -570,13 +570,11 @@ def main() -> None:
 
             # Handle pygame_gui button clicks
             elif event.type == pygame_gui.UI_BUTTON_PRESSED:
-                if event.ui_element == views[Team.RED].tick_controls.live_btn:
-                    views[Team.RED].freeze_frame = None
-                elif event.ui_element == views[Team.BLUE].tick_controls.live_btn:
-                    views[Team.BLUE].freeze_frame = None
                 # Handle plan control buttons
                 for team in [Team.RED, Team.BLUE]:
                     view = views[team]
+                    if event.ui_element == view.tick_controls.live_btn:
+                        view.freeze_frame = None
                     if view.plan_controls is not None:
                         if event.ui_element == view.plan_controls.issue_plan_btn:
                             # Issue plan for this team
@@ -605,12 +603,11 @@ def main() -> None:
 
             # Handle slider value changes
             elif event.type == pygame_gui.UI_HORIZONTAL_SLIDER_MOVED:
-                if event.ui_element == views[Team.RED].tick_controls.slider:
-                    if state.tick > 0:
-                        views[Team.RED].freeze_frame = int(event.value * state.tick)
-                elif event.ui_element == views[Team.BLUE].tick_controls.slider:
-                    if state.tick > 0:
-                        views[Team.BLUE].freeze_frame = int(event.value * state.tick)
+                for team in Team:
+                    view = views[team]
+                    if event.ui_element == view.tick_controls.slider:
+                        if state.tick > 0:
+                            view.freeze_frame = int(event.value * state.tick)
 
             # Handle map clicks for unit selection and waypoints
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
