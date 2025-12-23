@@ -23,7 +23,7 @@ class FoodConfig:
     octaves: int = 3
     persistence: float = 0.5
     lacunarity: float = 2.0
-    max_prob: float = 0.1
+    max_prob: float = 0.0
     seed: int | None = None
 
 
@@ -54,7 +54,12 @@ class BasePresent:
     team: Team
 
 
-CellContents = Empty | UnitPresent | BasePresent
+@dataclass(frozen=True)
+class FoodPresent:
+    count: int
+
+
+CellContents = Empty | UnitPresent | BasePresent | FoodPresent
 
 # A logbook maps timestamps to observations (position -> list of contents)
 Logbook = dict[Timestamp, dict[Pos, list[CellContents]]]
@@ -91,6 +96,13 @@ class Move(Order):
         if self.is_complete(unit):
             return
 
+        # Check if there's food at current position before moving
+        old_pos = unit.pos
+        food_count = state.food.get(old_pos, 0)
+        if food_count > 0:
+            # Remove food from current position
+            del state.food[old_pos]
+
         dx = 0 if self.target.x == unit.pos.x else (1 if self.target.x > unit.pos.x else -1)
         dy = 0 if self.target.y == unit.pos.y else (1 if self.target.y > unit.pos.y else -1)
 
@@ -98,6 +110,10 @@ class Move(Order):
             unit.pos = Pos(unit.pos.x + dx, unit.pos.y)
         elif dy != 0:
             unit.pos = Pos(unit.pos.x, unit.pos.y + dy)
+
+        # If we picked up food, place it at new position
+        if food_count > 0:
+            state.food[unit.pos] = state.food.get(unit.pos, 0) + food_count
 
 
 # TODO: I'm rusty on contra/covariance, but I worry that this is wrong.
@@ -162,6 +178,28 @@ class PositionReachedCondition:
         if unit.pos == self.position:
             return self.position
         return None
+
+
+@dataclass(frozen=True)
+class FoodInRange:
+    """Condition: food is visible within range.
+
+    Returns the position of the nearest food found, or None if no food is visible.
+    """
+
+    def evaluate(self, unit: "Unit", observations: dict[Pos, list[CellContents]]) -> Pos | None:
+        nearest_food_pos: Pos | None = None
+        nearest_distance: int | None = None
+
+        for pos, contents_list in observations.items():
+            for contents in contents_list:
+                if isinstance(contents, FoodPresent):
+                    distance = unit.pos.manhattan_distance(pos)
+                    if nearest_distance is None or distance < nearest_distance:
+                        nearest_distance = distance
+                        nearest_food_pos = pos
+
+        return nearest_food_pos
 
 
 @dataclass
@@ -467,6 +505,10 @@ class GameState:
         if self.get_base_region(Team.BLUE).contains(pos):
             contents.append(BasePresent(Team.BLUE))
 
+        # Check for food
+        if pos in self.food:
+            contents.append(FoodPresent(count=self.food[pos]))
+
         # If nothing found, return empty
         if not contents:
             contents.append(Empty())
@@ -539,6 +581,32 @@ def tick_game(state: GameState) -> None:
                 units_to_remove.extend(units_at_pos)
 
     state.units = [u for u in state.units if u not in units_to_remove]
+
+    # 3.75. Process food at bases to spawn new units
+    for team in [Team.RED, Team.BLUE]:
+        base_region = state.get_base_region(team)
+
+        # Find food in the base
+        food_positions = [pos for pos in state.food.keys() if base_region.contains(pos)]
+
+        for food_pos in food_positions:
+            # Find unoccupied cells in the base
+            occupied_positions = {unit.pos for unit in state.units}
+            unoccupied_cells = [cell for cell in base_region.cells if cell not in occupied_positions]
+
+            if unoccupied_cells:
+                # Find closest unoccupied cell to the food
+                closest_cell = min(unoccupied_cells, key=lambda cell: food_pos.manhattan_distance(cell))
+
+                # Spawn a new unit at the closest unoccupied cell
+                new_unit = Unit(team=team, pos=closest_cell, original_pos=closest_cell)
+                state.units.append(new_unit)
+
+                # Remove one food item (or all if we want to spawn multiple units per food count)
+                # Based on the requirement "a new unit is created", I'll spawn one unit per food item
+                state.food[food_pos] -= 1
+                if state.food[food_pos] == 0:
+                    del state.food[food_pos]
 
     # 4. Sync units that are at base
     for unit in state.units:
