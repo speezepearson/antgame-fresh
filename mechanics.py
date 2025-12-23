@@ -516,6 +516,29 @@ class View:
     logbook: Logbook = field(default_factory=lambda: defaultdict(dict))
     last_seen: dict[UnitId, tuple[Timestamp, Unit]] = field(default_factory=dict)
     expected_trajectories: dict[UnitId, ExpectedTrajectory] = field(default_factory=dict)
+    last_observations: dict[Pos, tuple[Timestamp, list[CellContents]]] = field(default_factory=dict)
+
+    def add_observations(self, game: GameState, observations: dict[Pos, list[CellContents]]) -> None:
+        self.logbook[game.tick].update(observations)
+        new_keys = set(observations.keys()) - set(self.last_observations.keys())
+        if new_keys: print('new_keys', ' '.join(f'{xy.x},{xy.y}' for xy in new_keys))
+        for pos, contents_list in observations.items():
+            self.last_observations[pos] = (game.tick, contents_list)
+            for contents in contents_list:
+                if isinstance(contents, UnitPresent):
+                    self.last_seen[contents.unit_id] = (game.tick, [u for u in game.units if u.id ==contents.unit_id][0])
+
+    def merge_from_logbook(self, logbook: Logbook) -> None:
+        """Merge a unit's logbook into the team's base logbook."""
+        for timestamp, observations in logbook.items():
+            if timestamp not in self.logbook:
+                self.logbook[timestamp] = {}
+            # Merge observations for this timestamp
+            self.logbook[timestamp].update(observations)
+            for pos, contents_list in observations.items():
+                if not (pos in self.last_observations and self.last_observations[pos][0] >= timestamp):
+                    self.last_observations[pos] = (timestamp, contents_list)
+
 
 
 @dataclass
@@ -551,10 +574,7 @@ class GameState:
                     )
                     observations.update(unit_observations)
 
-            self.views[team].logbook[self.tick].update(observations)
-            for unit in self.units:
-                if unit.team == team and unit.pos in observations:
-                    self.views[team].last_seen[unit.id] = (self.tick, deepcopy( unit))
+            self.views[team].add_observations(self, observations)
 
     def _observe_from_position(
         self, observer_pos: Pos, visibility_radius: int
@@ -610,13 +630,7 @@ class GameState:
 
     def _merge_logbook_to_base(self, unit: Unit) -> None:
         """Merge a unit's logbook into the team's base logbook."""
-        base_logbook = self.views[unit.team].logbook
-        for timestamp, observations in unit.logbook.items():
-            if timestamp not in base_logbook:
-                base_logbook[timestamp] = {}
-            # Merge observations for this timestamp
-            base_logbook[timestamp].update(observations)
-
+        self.views[unit.team].merge_from_logbook(unit.logbook)
         # Clear unit's logbook and update sync time
         unit.logbook.clear()
         unit.last_sync_tick = self.tick

@@ -10,7 +10,9 @@ import pygame_gui
 
 from core import Pos, Region
 from mechanics import (
+    Empty,
     FoodInRangeCondition,
+    FoodPresent,
     GameState,
     MoveHomeAction,
     MoveThereAction,
@@ -56,7 +58,7 @@ def format_plan(plan: Plan, unit: Unit) -> list[str]:
         lines.append("Interrupts:")
         for interrupt in plan.interrupts:
             condition_desc = interrupt.condition.description
-            lines.append(f"  If {condition_desc}: <action>")
+            lines.append(f"  If {condition_desc}: {'; '.join([action.description for action in interrupt.actions])}")
 
     return lines
 
@@ -87,11 +89,16 @@ def draw_grid(
 
 
 def draw_base(
-    surface: pygame.Surface, region: Region, team: Team, offset_x: int, offset_y: int
+    surface: pygame.Surface,
+    region: Region,
+    team: Team,
+    offset_x: int,
+    offset_y: int,
+    outline_only: bool = False, # TODO
 ) -> None:
     """Draw a base region with a faint background tint."""
     # Faint background color for base cells
-    tint_color = (80, 40, 40) if team == Team.RED else (40, 40, 80)
+    tint_color = (80, 40, 40) if team == Team.RED else (40, 40, 200)
     for pos in region.cells:
         rect = pygame.Rect(
             offset_x + pos.x * TILE_SIZE,
@@ -125,7 +132,7 @@ def draw_unit_at(
 
 
 def draw_food(
-    surface: pygame.Surface, food: dict[Pos, int], offset_x: int, offset_y: int
+    surface: pygame.Surface, food: dict[Pos, int], offset_x: int, offset_y: int, outline_only: bool = False
 ) -> None:
     """Draw food as small green dots, with multiple items positioned non-overlapping."""
     radius = 3
@@ -169,18 +176,13 @@ def draw_food(
             ][: min(count, 5)]
 
         for dx, dy in positions:
-            pygame.draw.circle(
-                surface, (100, 255, 100), (tile_x + dx, tile_y + dy), radius
-            )
-
-        # If more than 5, indicate with a brighter center dot
-        if count > 5:
-            pygame.draw.circle(
-                surface,
-                (150, 255, 150),
-                (tile_x + TILE_SIZE // 2, tile_y + TILE_SIZE // 2),
-                radius,
-            )
+            if outline_only:
+                pygame.draw.circle(
+                    surface, (100, 255, 100), (tile_x + dx, tile_y + dy), radius, 1)
+            else:
+                pygame.draw.circle(
+                    surface, (100, 255, 100), (tile_x + dx, tile_y + dy), radius
+                )
 
 
 def draw_god_view(
@@ -233,26 +235,53 @@ def draw_player_view(
     draw_grid(surface, offset_x, offset_y, state.grid_width, state.grid_height)
 
     # Get observations for this timestamp
-    if view_t in logbook:
-        observations = logbook[view_t]
+    cur_observations = logbook.get(view_t, {})
 
-        # Draw visible tiles as slightly lighter
-        for pos in observations.keys():
-            rect = pygame.Rect(
-                offset_x + pos.x * TILE_SIZE,
-                offset_y + pos.y * TILE_SIZE,
-                TILE_SIZE,
-                TILE_SIZE,
-            )
-            pygame.draw.rect(surface, (40, 40, 40), rect)
+    # Draw visible tiles as slightly lighter
+    for pos in cur_observations.keys():
+        rect = pygame.Rect(
+            offset_x + pos.x * TILE_SIZE,
+            offset_y + pos.y * TILE_SIZE,
+            TILE_SIZE,
+            TILE_SIZE,
+        )
+        pygame.draw.rect(surface, (40, 40, 40), rect)
 
-        # Redraw grid on top
-        draw_grid(surface, offset_x, offset_y, state.grid_width, state.grid_height)
+    # Redraw grid on top
+    draw_grid(surface, offset_x, offset_y, state.grid_width, state.grid_height)
 
-        # Draw observed contents (bases first, then units on top)
-        drawn_bases = set()
-        # First pass: draw bases
-        for pos, contents_list in observations.items():
+    # Draw observed contents (bases first, then units on top)
+    drawn_bases: set[Team] = set()
+    # First pass: draw bases
+    for pos, cur_contents_list in cur_observations.items():
+        for cur_contents in cur_contents_list:
+            if isinstance(cur_contents, BasePresent):
+                if cur_contents.team not in drawn_bases:
+                    draw_base(
+                        surface,
+                        state.get_base_region(cur_contents.team),
+                        cur_contents.team,
+                        offset_x,
+                        offset_y,
+                    )
+                    drawn_bases.add(cur_contents.team)
+    # Second pass: draw food in visible areas
+    visible_food = {
+        pos: count for pos, count in state.food.items() if pos in cur_observations
+    }
+    draw_food(surface, visible_food, offset_x, offset_y)
+    # Third pass: draw units on top
+    for pos, cur_contents_list in cur_observations.items():
+        for cur_contents in cur_contents_list:
+            if isinstance(cur_contents, UnitPresent):
+                draw_unit_at(surface, cur_contents.team, pos, offset_x, offset_y)
+
+    # In live view only, draw last_observations for cells not currently visible
+    if freeze_frame is None:
+        last_obs = state.views[team].last_observations
+        for pos, (_, contents_list) in last_obs.items():
+            if pos in cur_observations:
+                continue  # Skip cells we can currently see
             for contents in contents_list:
                 if isinstance(contents, BasePresent):
                     if contents.team not in drawn_bases:
@@ -264,16 +293,10 @@ def draw_player_view(
                             offset_y,
                         )
                         drawn_bases.add(contents.team)
-        # Second pass: draw food in visible areas
-        visible_food = {
-            pos: count for pos, count in state.food.items() if pos in observations
-        }
-        draw_food(surface, visible_food, offset_x, offset_y)
-        # Third pass: draw units on top
-        for pos, contents_list in observations.items():
-            for contents in contents_list:
-                if isinstance(contents, UnitPresent):
-                    draw_unit_at(surface, contents.team, pos, offset_x, offset_y)
+                elif isinstance(contents, UnitPresent):
+                    draw_unit_at(surface, contents.team, pos, offset_x, offset_y, outline_only=True)
+                elif isinstance(contents, FoodPresent):
+                    draw_food(surface, {pos: contents.count}, offset_x, offset_y, outline_only=True)
 
     # Draw predicted positions for units with expected trajectories
     view = state.views[team]
