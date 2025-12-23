@@ -157,6 +157,17 @@ class Interrupt(Generic[T]):
 
     When the condition evaluates to a non-None value, that value is passed
     to the action callable to generate new orders.
+
+    Design considerations:
+    - Generic[T] provides type-safe construction: mypy ensures the condition's
+      output type matches the action's input type at interrupt creation time.
+    - Remains fully inspectable at runtime: condition and action fields can be
+      examined separately for debugging, logging, and display purposes.
+    - Heterogeneous storage: A Plan can hold interrupts with different T values
+      (e.g., Interrupt[Pos], Interrupt[int], Interrupt[None]) by declaring
+      the list as list[Interrupt[Any]]. The generic T is erased at runtime.
+    - This design balances type safety (catching mismatched condition/action
+      pairs at construction) with flexibility (storing mixed interrupt types).
     """
 
     condition: Condition[T]
