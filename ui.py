@@ -569,16 +569,18 @@ def main() -> None:
 
         for event in pygame.event.get():
             # Process pygame_gui events
-            ui_manager.process_events(event)
+            if ui_manager.process_events(event):
+                continue
 
             if event.type == pygame.QUIT:
                 running = False
 
-            # Handle pygame_gui button clicks
-            elif event.type == pygame_gui.UI_BUTTON_PRESSED:
-                # Handle plan control buttons
-                for team in Team:
-                    view = views[team]
+            for team in Team:
+                view = views[team]
+
+                # Handle pygame_gui button clicks
+                if event.type == pygame_gui.UI_BUTTON_PRESSED:
+                    # Handle plan control buttons
                     if event.ui_element == view.tick_controls.live_btn:
                         view.freeze_frame = None
                     if view.plan_controls is not None:
@@ -607,24 +609,21 @@ def main() -> None:
                                 )
                             break
 
-            # Handle slider value changes
-            elif event.type == pygame_gui.UI_HORIZONTAL_SLIDER_MOVED:
-                for team in Team:
-                    view = views[team]
+                # Handle slider value changes
+                elif event.type == pygame_gui.UI_HORIZONTAL_SLIDER_MOVED:
                     if event.ui_element == view.tick_controls.slider:
                         if state.tick > 0:
                             view.freeze_frame = int(event.value * state.tick)
 
-            # Handle map clicks for unit selection and waypoints
-            elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                mx, my = event.pos
+                # Handle map clicks for unit selection and waypoints
+                elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                    mx, my = event.pos
 
-                # Skip if click is on a pygame_gui element
-                if ui_manager.get_hovering_any_element():
-                    continue
+                    # Skip if click is on a pygame_gui element
+                    if ui_manager.get_hovering_any_element():
+                        continue
 
-                # Check each team's player view for unit selection or target
-                for team in Team:
+                    # Check each team's player view for unit selection or target
                     grid_pos = screen_to_grid(
                         mx,
                         my,
@@ -633,7 +632,6 @@ def main() -> None:
                         state.grid_width,
                         state.grid_height,
                     )
-                    view = views[team]
                     # Only allow interaction when viewing live (not a freeze frame)
                     if grid_pos is not None and view.freeze_frame is None:
                         if view.selected_unit_id is not None:
