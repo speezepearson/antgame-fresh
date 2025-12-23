@@ -121,15 +121,13 @@ def draw_food(surface: pygame.Surface, food: dict[Pos, int], offset_x: int, offs
 
         if count == 1:
             # Single item: center of tile
-            center_x = tile_x + TILE_SIZE // 2
-            center_y = tile_y + TILE_SIZE // 2
-            pygame.draw.circle(surface, (100, 255, 100), (center_x, center_y), radius)
+            positions = [(TILE_SIZE // 2, TILE_SIZE // 2)]
         elif count == 2:
             # Two items: left and right
-            for i, offset in enumerate([TILE_SIZE // 3, 2 * TILE_SIZE // 3]):
-                center_x = tile_x + offset
-                center_y = tile_y + TILE_SIZE // 2
-                pygame.draw.circle(surface, (100, 255, 100), (center_x, center_y), radius)
+            positions = [
+                (TILE_SIZE // 3, TILE_SIZE // 2),
+                (2 * TILE_SIZE // 3, TILE_SIZE // 2),
+            ]
         elif count == 3:
             # Three items: triangle pattern
             positions = [
@@ -137,8 +135,6 @@ def draw_food(surface: pygame.Surface, food: dict[Pos, int], offset_x: int, offs
                 (TILE_SIZE // 3, 2 * TILE_SIZE // 3),       # bottom left
                 (2 * TILE_SIZE // 3, 2 * TILE_SIZE // 3),   # bottom right
             ]
-            for dx, dy in positions:
-                pygame.draw.circle(surface, (100, 255, 100), (tile_x + dx, tile_y + dy), radius)
         elif count == 4:
             # Four items: corners
             positions = [
@@ -147,8 +143,6 @@ def draw_food(surface: pygame.Surface, food: dict[Pos, int], offset_x: int, offs
                 (TILE_SIZE // 3, 2 * TILE_SIZE // 3),
                 (2 * TILE_SIZE // 3, 2 * TILE_SIZE // 3),
             ]
-            for dx, dy in positions:
-                pygame.draw.circle(surface, (100, 255, 100), (tile_x + dx, tile_y + dy), radius)
         else:
             # Five or more: 2x2 grid plus center
             positions = [
@@ -157,13 +151,14 @@ def draw_food(surface: pygame.Surface, food: dict[Pos, int], offset_x: int, offs
                 (TILE_SIZE // 3, 2 * TILE_SIZE // 3),
                 (2 * TILE_SIZE // 3, 2 * TILE_SIZE // 3),
                 (TILE_SIZE // 2, TILE_SIZE // 2),
-            ]
-            # Draw up to 5 items, or all if count <= 5
-            for i, (dx, dy) in enumerate(positions[:min(count, 5)]):
-                pygame.draw.circle(surface, (100, 255, 100), (tile_x + dx, tile_y + dy), radius)
-            # If more than 5, indicate with a brighter center dot
-            if count > 5:
-                pygame.draw.circle(surface, (150, 255, 150), (tile_x + TILE_SIZE // 2, tile_y + TILE_SIZE // 2), radius)
+            ][:min(count, 5)]
+
+        for dx, dy in positions:
+            pygame.draw.circle(surface, (100, 255, 100), (tile_x + dx, tile_y + dy), radius)
+
+        # If more than 5, indicate with a brighter center dot
+        if count > 5:
+            pygame.draw.circle(surface, (150, 255, 150), (tile_x + TILE_SIZE // 2, tile_y + TILE_SIZE // 2), radius)
 
 
 def draw_god_view(
