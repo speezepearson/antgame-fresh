@@ -152,11 +152,26 @@ class PositionReachedCondition:
 
 
 @dataclass
+class Action(Generic[T]):
+    """A named, inspectable action that generates orders based on input data.
+
+    The generic parameter T represents the type of data this action expects.
+    Actions are typically paired with Conditions that produce matching T values.
+    """
+
+    name: str
+    execute: Callable[[T], list[Order]]
+
+    def __str__(self) -> str:
+        return self.name
+
+
+@dataclass
 class Interrupt(Generic[T]):
     """An interrupt handler that can preempt a plan when a condition is met.
 
     When the condition evaluates to a non-None value, that value is passed
-    to the action callable to generate new orders.
+    to the action to generate new orders.
 
     Design considerations:
     - Generic[T] provides type-safe construction: mypy ensures the condition's
@@ -171,7 +186,10 @@ class Interrupt(Generic[T]):
     """
 
     condition: Condition[T]
-    action: Callable[[T], list[Order]]
+    action: Action[T]
+
+    def __str__(self) -> str:
+        return f"when {self.condition}, do {self.action}"
 
 
 @dataclass
@@ -416,7 +434,7 @@ def tick_game(state: GameState) -> None:
             result = interrupt.condition.evaluate(unit, observations)
             if result is not None:
                 # First matching interrupt triggers: call action with result and replace order queue
-                new_orders = interrupt.action(result)
+                new_orders = interrupt.action.execute(result)
                 unit.plan.interrupt_with(new_orders)
                 break  # Only first matching interrupt per tick
 

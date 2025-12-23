@@ -317,11 +317,14 @@ class TestTickGame:
             interrupts=[type('Interrupt', (), interrupt)()]  # Mock Interrupt
         )
 
-        from mechanics import Interrupt
+        from mechanics import Interrupt, Action
         red_unit.plan.interrupts = [
             Interrupt(
                 condition=EnemyInRangeCondition(distance=3),
-                action=lambda enemy_pos: [Move(target=fallback_pos)]
+                action=Action(
+                    name="fallback to safe position",
+                    execute=lambda enemy_pos: [Move(target=fallback_pos)]
+                )
             )
         ]
 

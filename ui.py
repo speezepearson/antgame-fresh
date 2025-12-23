@@ -7,7 +7,7 @@ import pygame
 from core import Pos, Region
 from mechanics import (
     GameState, Team, BasePresent, UnitPresent, GRID_SIZE, Move, Plan, tick_game,
-    Unit, Order, Condition, Interrupt,
+    Unit, Order, Condition, Action, Interrupt,
     EnemyInRangeCondition, BaseVisibleCondition, PositionReachedCondition,
 )
 
