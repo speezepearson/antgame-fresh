@@ -334,7 +334,7 @@ def main() -> None:
     padding = 10
     label_height = 25
     slider_height = 30
-    plan_area_height = 150  # Space for plan display and buttons below player maps
+    plan_area_height = 240  # Space for plan display and buttons below player maps
 
     # Create the game state first to get grid dimensions
     food_config = FoodConfig(
@@ -525,7 +525,7 @@ def main() -> None:
 
             # Display the working plan in a scrollable text box
             plan_y = slider_y + 30  # Start below the slider
-            plan_box_height = 90  # Fixed height for scrollable area
+            plan_box_height = 180  # Fixed height for scrollable area (doubled)
             btn_y = plan_y + plan_box_height + 5  # Position buttons below the text box
 
             if state.working_plan is not None:
@@ -541,9 +541,10 @@ def main() -> None:
                         html_text=plan_html,
                         relative_rect=text_box_rect,
                         manager=ui_manager,
+                        wrap_to_height=False,
                     )
                 else:
-                    plan_text_box.html_text = plan_html
+                    plan_text_box.set_text(plan_html)
                     plan_text_box.rebuild()
             elif plan_text_box is not None:
                 # No plan, remove the text box
