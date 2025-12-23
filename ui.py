@@ -242,7 +242,7 @@ def screen_to_grid(mouse_x: int, mouse_y: int, offset_x: int, offset_y: int, gri
     return None
 
 
-def find_unit_at_base(state: GameState, pos: Pos, team: Team):
+def find_unit_at_base(state: GameState, pos: Pos, team: Team) -> Unit | None:
     """Find a unit of the given team at pos, only if inside their base region."""
     base_region = state.get_base_region(team)
     for unit in state.units:
