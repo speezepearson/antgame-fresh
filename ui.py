@@ -389,6 +389,10 @@ def main() -> None:
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 mx, my = event.pos
 
+                # Skip manual handling if click is on a UI element (like the scrollbar)
+                if plan_text_box is not None and plan_text_box.rect.collidepoint(mx, my):
+                    continue
+
                 # Check LIVE buttons
                 if red_live_rect.collidepoint(mx, my):
                     state.view_live[Team.RED] = True
@@ -448,18 +452,26 @@ def main() -> None:
                                 state.working_plan = Plan()
 
             elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
-                dragging_slider = None
-
-            elif event.type == pygame.MOUSEMOTION and dragging_slider is not None:
+                # Only handle if not on UI element
                 mx, my = event.pos
-                if dragging_slider == Team.RED:
-                    rel_x = mx - red_slider_rect.x
-                    pct = max(0, min(1, rel_x / red_slider_rect.width))
-                    state.view_tick[Team.RED] = int(pct * state.tick)
-                else:
-                    rel_x = mx - blue_slider_rect.x
-                    pct = max(0, min(1, rel_x / blue_slider_rect.width))
-                    state.view_tick[Team.BLUE] = int(pct * state.tick)
+                if plan_text_box is None or not plan_text_box.rect.collidepoint(mx, my):
+                    dragging_slider = None
+
+            elif event.type == pygame.MOUSEMOTION:
+                mx, my = event.pos
+                # Skip if on UI element
+                if plan_text_box is not None and plan_text_box.rect.collidepoint(mx, my):
+                    continue
+
+                if dragging_slider is not None:
+                    if dragging_slider == Team.RED:
+                        rel_x = mx - red_slider_rect.x
+                        pct = max(0, min(1, rel_x / red_slider_rect.width))
+                        state.view_tick[Team.RED] = int(pct * state.tick)
+                    else:
+                        rel_x = mx - blue_slider_rect.x
+                        pct = max(0, min(1, rel_x / blue_slider_rect.width))
+                        state.view_tick[Team.BLUE] = int(pct * state.tick)
 
         # Game tick
         if current_time - last_tick >= tick_interval:
