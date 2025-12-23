@@ -71,6 +71,25 @@ class PlayerView:
     working_plan: Plan | None = None
 
 
+@dataclass
+class GameContext:
+    """Container for all game state and UI elements."""
+    state: GameState
+    screen: pygame.Surface
+    ui_manager: pygame_gui.UIManager
+    clock: pygame.time.Clock
+    views: dict[Team, PlayerView]
+    team_offsets: dict[Team, int]
+    red_offset_x: int
+    god_offset_x: int
+    blue_offset_x: int
+    views_offset_y: int
+    slider_y: int
+    map_pixel_size: int
+    tick_interval: int
+    last_tick: int
+
+
 def format_plan(plan: Plan, unit: Unit) -> list[str]:
     """Format a plan as a list of strings for display."""
     lines = []
@@ -417,6 +436,168 @@ def make_default_interrupts() -> list[Interrupt[Any]]:
             actions=[MoveThereAction(), MoveHomeAction()],
         ),
     ]
+
+
+def initialize_game() -> GameContext:
+    """Parse arguments and initialize game state, pygame, and UI elements."""
+    # Parse command-line arguments
+    parser = argparse.ArgumentParser(description="Ant RTS Game")
+    parser.add_argument(
+        "--width", type=int, default=GRID_SIZE, help="Width of the grid (default: 32)"
+    )
+    parser.add_argument(
+        "--height", type=int, default=GRID_SIZE, help="Height of the grid (default: 32)"
+    )
+    parser.add_argument(
+        "--food-scale",
+        type=float,
+        default=10.0,
+        help="Perlin noise scale for food generation (default: 10.0)",
+    )
+    parser.add_argument(
+        "--food-max-prob",
+        type=float,
+        default=0.1,
+        help="Maximum probability of food in a cell (default: 0.1)",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Random seed for food generation (default: random)",
+    )
+    args = parser.parse_args()
+
+    if args.seed is not None:
+        random.seed(args.seed)
+        numpy.random.seed(args.seed)
+
+    pygame.init()
+
+    # Layout: RED view (with slider) | GOD view | BLUE view (with slider)
+    padding = 10
+    label_height = 25
+    slider_height = 30
+    plan_area_height = 240  # Space for plan display and buttons below player maps
+
+    # Create the game state first to get grid dimensions
+    food_config = FoodConfig(
+        scale=args.food_scale,
+        max_prob=args.food_max_prob,
+    )
+    state = make_game(
+        grid_width=args.width, grid_height=args.height, food_config=food_config
+    )
+    map_pixel_size = state.grid_width * TILE_SIZE
+
+    window_width = map_pixel_size * 3 + padding * 4
+    window_height = (
+        map_pixel_size + padding * 2 + label_height + slider_height + plan_area_height
+    )
+
+    screen = pygame.display.set_mode((window_width, window_height))
+    pygame.display.set_caption("Ant RTS")
+
+    # Initialize pygame_gui manager
+    ui_manager = pygame_gui.UIManager((window_width, window_height))
+
+    clock = pygame.time.Clock()
+
+    red_offset_x = padding
+    god_offset_x = padding * 2 + map_pixel_size
+    blue_offset_x = padding * 3 + map_pixel_size * 2
+    views_offset_y = padding + label_height
+    slider_y = views_offset_y + map_pixel_size + 5
+    slider_width = map_pixel_size - 100
+
+    # Map teams to their view offsets
+    team_offsets = {
+        Team.RED: red_offset_x,
+        Team.BLUE: blue_offset_x,
+    }
+
+    # Create time sliders for RED team
+    red_tick_controls = TickControls(
+        slider=pygame_gui.elements.UIHorizontalSlider(
+            relative_rect=pygame.Rect(red_offset_x, slider_y, slider_width, 20),
+            start_value=0.0,
+            value_range=(0.0, 1.0),
+            manager=ui_manager,
+        ),
+        tick_label=pygame_gui.elements.UILabel(
+            relative_rect=pygame.Rect(red_offset_x + slider_width + 5, slider_y, 45, 20),
+            text="t=0",
+            manager=ui_manager,
+        ),
+        live_btn=pygame_gui.elements.UIButton(
+            relative_rect=pygame.Rect(red_offset_x + slider_width + 50, slider_y, 50, 20),
+            text="LIVE",
+            manager=ui_manager,
+        ),
+    )
+
+    # Create time sliders for BLUE team
+    blue_tick_controls = TickControls(
+        slider=pygame_gui.elements.UIHorizontalSlider(
+            relative_rect=pygame.Rect(blue_offset_x, slider_y, slider_width, 20),
+            start_value=0.0,
+            value_range=(0.0, 1.0),
+            manager=ui_manager,
+        ),
+        tick_label=pygame_gui.elements.UILabel(
+            relative_rect=pygame.Rect(blue_offset_x + slider_width + 5, slider_y, 45, 20),
+            text="t=0",
+            manager=ui_manager,
+        ),
+        live_btn=pygame_gui.elements.UIButton(
+            relative_rect=pygame.Rect(blue_offset_x + slider_width + 50, slider_y, 50, 20),
+            text="LIVE",
+            manager=ui_manager,
+        ),
+    )
+
+    tick_interval = 200
+    last_tick = pygame.time.get_ticks()
+
+    red_view = PlayerView(
+        knowledge=PlayerKnowledge(
+            team=Team.RED,
+            grid_width=args.width,
+            grid_height=args.height,
+            tick=state.tick,
+        ),
+        tick_controls=red_tick_controls,
+    )
+    blue_view = PlayerView(
+        knowledge=PlayerKnowledge(
+            team=Team.BLUE,
+            grid_width=args.width,
+            grid_height=args.height,
+            tick=state.tick,
+        ),
+        tick_controls=blue_tick_controls,
+    )
+    views = {
+        Team.RED: red_view,
+        Team.BLUE: blue_view,
+    }
+
+    return GameContext(
+        state=state,
+        screen=screen,
+        ui_manager=ui_manager,
+        clock=clock,
+        views=views,
+        team_offsets=team_offsets,
+        red_offset_x=red_offset_x,
+        god_offset_x=god_offset_x,
+        blue_offset_x=blue_offset_x,
+        views_offset_y=views_offset_y,
+        slider_y=slider_y,
+        map_pixel_size=map_pixel_size,
+        tick_interval=tick_interval,
+        last_tick=last_tick,
+    )
 
 
 def main() -> None:
