@@ -21,8 +21,8 @@ class GameClient(ABC):
     """
 
     @abstractmethod
-    def get_player_knowledge(self, team: Team) -> PlayerKnowledge:
-        """Get the current knowledge for a team."""
+    def get_player_knowledge(self, team: Team, tick: Timestamp) -> PlayerKnowledge:
+        """Wait until at least the given time, then get the current knowledge for a team."""
         pass
 
     @abstractmethod
@@ -64,7 +64,9 @@ class LocalClient(GameClient):
     state: GameState
     knowledge: dict[Team, PlayerKnowledge]
 
-    def get_player_knowledge(self, team: Team) -> PlayerKnowledge:
+    def get_player_knowledge(self, team: Team, tick: Timestamp) -> PlayerKnowledge:
+        while self.state.tick < tick:
+            time.sleep(0.03) # TODO: use a Condition instead of polling
         return self.knowledge[team]
 
     def set_unit_plan(self, team: Team, unit_id: UnitId, plan: Plan) -> None:
@@ -96,35 +98,36 @@ class RemoteClient(GameClient):
 
     def __post_init__(self) -> None:
         """Initialize by fetching initial state."""
-        self._fetch_knowledge()
+        self._fetch_knowledge(tick=Timestamp(0))
 
-    def _fetch_knowledge(self) -> None:
+    def _fetch_knowledge(self, tick: Timestamp) -> None:
         """Fetch knowledge from server, waiting for next tick if needed."""
-        try:
-            # Wait for tick > last_tick
-            response = requests.get(
-                f"{self.url}/knowledge/{self.team.name}",
-                params={"tick": self._last_tick + 1},
-                timeout=30
-            )
-            response.raise_for_status()
-            data = response.json()
+        # Wait for tick > last_tick
+        print('fetching knowledge', self.team.name, tick)
+        response = requests.get(
+            f"{self.url}/knowledge/{self.team.name}",
+            params={"tick": tick},
+            timeout=30
+        )
+        # print('response', response.status_code, response.text)
+        response.raise_for_status()
+        data = response.json()
 
-            # Deserialize knowledge
-            from serialization import deserialize_player_knowledge
-            self._current_knowledge = deserialize_player_knowledge(data["knowledge"])
-            self._base_region = deserialize_region(data["base_region"])
-            self._last_tick = self._current_knowledge.tick
-        except Exception as e:
-            print(f"Error fetching knowledge: {e}")
-            # Keep using stale knowledge if fetch fails
+        # Deserialize knowledge
+        from serialization import deserialize_player_knowledge
+        self._current_knowledge = deserialize_player_knowledge(data["knowledge"])
+        self._base_region = deserialize_region(data["base_region"])
+        self._last_tick = self._current_knowledge.tick
+        print('fetched knowledge for', self.team.name, 'at >=', tick, ', now t=', self._last_tick)
 
-    def get_player_knowledge(self, team: Team) -> PlayerKnowledge:
+    def get_player_knowledge(self, team: Team, tick: Timestamp) -> PlayerKnowledge:
         if team != self.team:
             raise ValueError(f"Can only view own team ({self.team}) in remote mode")
 
-        # Fetch latest knowledge
-        self._fetch_knowledge()
+        if tick <= self._last_tick and self._current_knowledge is not None:
+            return self._current_knowledge
+
+        self._fetch_knowledge(tick=tick)
 
         if self._current_knowledge is None:
             raise RuntimeError("Failed to fetch knowledge from server")

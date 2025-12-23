@@ -4,7 +4,7 @@ import pytest
 import responses
 import threading
 import time
-from typing import Any
+from typing import Any, Generator, Iterator
 
 from core import Pos, Region, Timestamp
 from mechanics import (
@@ -297,7 +297,6 @@ def test_serialize_deserialize_player_knowledge():
 
 # ===== LocalClient Tests =====
 
-
 def test_local_client_get_player_knowledge():
     """Test LocalClient returns correct player knowledge."""
     state = make_game(grid_width=16, grid_height=16)
@@ -307,8 +306,8 @@ def test_local_client_get_player_knowledge():
     }
     client = LocalClient(state=state, knowledge=knowledge)
 
-    assert client.get_player_knowledge(Team.RED) == knowledge[Team.RED]
-    assert client.get_player_knowledge(Team.BLUE) == knowledge[Team.BLUE]
+    assert client.get_player_knowledge(Team.RED, tick=state.tick) == knowledge[Team.RED]
+    assert client.get_player_knowledge(Team.BLUE, tick=state.tick) == knowledge[Team.BLUE]
 
 
 def test_local_client_set_unit_plan():
@@ -564,8 +563,9 @@ def test_server_set_unit_plan_unit_not_in_base(test_app):
 # ===== RemoteClient Tests (Integration - requires real server) =====
 
 
+RunningServerFixture = tuple[GameServer, GameState, dict[Team, PlayerKnowledge], int]
 @pytest.fixture
-def running_server():
+def running_server() -> Iterator[RunningServerFixture]:
     """Create and start a real server for integration tests.
 
     Only use this for tests that actually need a running server (RemoteClient tests).
@@ -599,7 +599,7 @@ def running_server():
 
 
 @pytest.mark.integration
-def test_remote_client_initialization(running_server):
+def test_remote_client_initialization(running_server: RunningServerFixture) -> None:
     """Test RemoteClient can initialize and fetch initial knowledge."""
     server, state, knowledge, port = running_server
 
@@ -614,25 +614,25 @@ def test_remote_client_initialization(running_server):
 
 
 @pytest.mark.integration
-def test_remote_client_get_player_knowledge(running_server):
+def test_remote_client_get_player_knowledge(running_server: RunningServerFixture) -> None:
     """Test RemoteClient can fetch player knowledge."""
     server, state, knowledge, port = running_server
 
     client = RemoteClient(url=f"http://localhost:{port}", team=Team.RED)
 
     # Get knowledge for own team
-    k = client.get_player_knowledge(Team.RED)
+    k = client.get_player_knowledge(Team.RED, tick=state.tick)
     assert k.team == Team.RED
     assert k.grid_width == 16
     assert k.grid_height == 16
 
     # Try to get knowledge for other team (should fail)
     with pytest.raises(ValueError, match="Can only view own team"):
-        client.get_player_knowledge(Team.BLUE)
+        client.get_player_knowledge(Team.BLUE, tick=state.tick)
 
 
 @pytest.mark.integration
-def test_remote_client_set_unit_plan(running_server):
+def test_remote_client_set_unit_plan(running_server: RunningServerFixture) -> None:
     """Test RemoteClient can set unit plans."""
     server, state, knowledge, port = running_server
 
@@ -648,11 +648,11 @@ def test_remote_client_set_unit_plan(running_server):
 
     # Verify plan was set on server
     assert len(state.units[unit_id].plan.orders) == 1
-    assert state.units[unit_id].plan.orders[0].target == Pos(12, 12)
+    assert state.units[unit_id].plan.orders[0] == Move(Pos(12, 12))
 
 
 @pytest.mark.integration
-def test_remote_client_set_unit_plan_wrong_team(running_server):
+def test_remote_client_set_unit_plan_wrong_team(running_server: RunningServerFixture) -> None:
     """Test RemoteClient cannot set plans for other team."""
     server, state, knowledge, port = running_server
 
@@ -665,7 +665,7 @@ def test_remote_client_set_unit_plan_wrong_team(running_server):
 
 
 @pytest.mark.integration
-def test_remote_client_get_base_region(running_server):
+def test_remote_client_get_base_region(running_server: RunningServerFixture) -> None:
     """Test RemoteClient can get base region."""
     server, state, knowledge, port = running_server
 
@@ -681,7 +681,7 @@ def test_remote_client_get_base_region(running_server):
 
 
 @pytest.mark.integration
-def test_remote_client_get_current_tick(running_server):
+def test_remote_client_get_current_tick(running_server: RunningServerFixture) -> None:
     """Test RemoteClient can get current tick."""
     server, state, knowledge, port = running_server
 
@@ -692,7 +692,7 @@ def test_remote_client_get_current_tick(running_server):
 
 
 @pytest.mark.integration
-def test_remote_client_get_god_view(running_server):
+def test_remote_client_get_god_view(running_server: RunningServerFixture) -> None:
     """Test RemoteClient cannot get god view."""
     server, state, knowledge, port = running_server
 
@@ -702,7 +702,7 @@ def test_remote_client_get_god_view(running_server):
 
 
 @pytest.mark.integration
-def test_remote_client_get_available_teams(running_server):
+def test_remote_client_get_available_teams(running_server: RunningServerFixture) -> None:
     """Test RemoteClient only returns own team."""
     server, state, knowledge, port = running_server
 
@@ -713,7 +713,7 @@ def test_remote_client_get_available_teams(running_server):
 
 
 @pytest.mark.integration
-def test_remote_client_knowledge_updates(running_server):
+def test_remote_client_knowledge_updates(running_server: RunningServerFixture) -> None:
     """Test RemoteClient can fetch updated knowledge."""
     server, state, knowledge, port = running_server
 
@@ -727,7 +727,7 @@ def test_remote_client_knowledge_updates(running_server):
         k.tick_knowledge(state)
 
     # Fetch updated knowledge
-    updated_knowledge = client.get_player_knowledge(Team.RED)
+    updated_knowledge = client.get_player_knowledge(Team.RED, state.tick)
     assert updated_knowledge.tick > initial_tick
 
 
@@ -735,7 +735,7 @@ def test_remote_client_knowledge_updates(running_server):
 
 
 @pytest.mark.integration
-def test_client_server_integration(running_server):
+def test_client_server_integration(running_server: RunningServerFixture) -> None:
     """Test full client-server interaction."""
     server, state, knowledge, port = running_server
 
@@ -744,8 +744,8 @@ def test_client_server_integration(running_server):
     blue_client = RemoteClient(url=f"http://localhost:{port}", team=Team.BLUE)
 
     # Get initial knowledge
-    red_knowledge = red_client.get_player_knowledge(Team.RED)
-    blue_knowledge = blue_client.get_player_knowledge(Team.BLUE)
+    red_knowledge = red_client.get_player_knowledge(Team.RED, tick=state.tick)
+    blue_knowledge = blue_client.get_player_knowledge(Team.BLUE, tick=state.tick)
 
     assert red_knowledge.team == Team.RED
     assert blue_knowledge.team == Team.BLUE
@@ -760,8 +760,8 @@ def test_client_server_integration(running_server):
     )
 
     # Verify plans were set
-    assert state.units[red_unit.id].plan.orders[0].target == Pos(8, 8)
-    assert state.units[blue_unit.id].plan.orders[0].target == Pos(9, 9)
+    assert state.units[red_unit.id].plan.orders[0] == Move(Pos(8, 8))
+    assert state.units[blue_unit.id].plan.orders[0] == Move(Pos(9, 9))
 
     # Advance game
     tick_game(state)
@@ -769,8 +769,8 @@ def test_client_server_integration(running_server):
         k.tick_knowledge(state)
 
     # Fetch updated knowledge
-    updated_red = red_client.get_player_knowledge(Team.RED)
-    updated_blue = blue_client.get_player_knowledge(Team.BLUE)
+    updated_red = red_client.get_player_knowledge(Team.RED, tick=state.tick)
+    updated_blue = blue_client.get_player_knowledge(Team.BLUE, tick=state.tick)
 
     assert updated_red.tick > red_knowledge.tick
     assert updated_blue.tick > blue_knowledge.tick

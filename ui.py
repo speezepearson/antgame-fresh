@@ -435,7 +435,7 @@ def screen_to_grid(
 def find_unit_at_base(client: GameClient, pos: Pos, team: Team) -> Unit | None:
     """Find a unit of the given team at pos, only if inside their base region."""
     base_region = client.get_base_region(team)
-    knowledge = client.get_player_knowledge(team)
+    knowledge = client.get_player_knowledge(team, client.get_current_tick())
 
     # Check units we know about from our observations
     for unit_id, (timestamp, unit) in knowledge.last_seen.items():
@@ -539,7 +539,7 @@ def initialize_game() -> GameContext:
         from client import RemoteClient
         temp_client = RemoteClient(url=args.url, team=client_team)
         # Fetch initial knowledge to get grid dimensions
-        initial_knowledge = temp_client.get_player_knowledge(client_team)
+        initial_knowledge = temp_client.get_player_knowledge(client_team, Timestamp(0))
         grid_width = initial_knowledge.grid_width
         grid_height = initial_knowledge.grid_height
         state = None  # No local state in client mode
@@ -864,7 +864,7 @@ def draw_ui(ctx: GameContext) -> None:
 
         if view.selected_unit_id is not None:
             # Get the selected unit from player knowledge
-            knowledge = ctx.client.get_player_knowledge(team)
+            knowledge = ctx.client.get_player_knowledge(team, ctx.client.get_current_tick())
             selected_unit = None
             if view.selected_unit_id in knowledge.last_seen:
                 _, selected_unit = knowledge.last_seen[view.selected_unit_id]
@@ -974,6 +974,13 @@ def main() -> None:
                 for team, knowledge in ctx.client.knowledge.items():
                     knowledge.tick_knowledge(ctx.client.state)
                 ctx.last_tick = current_time
+        elif isinstance(ctx.client, RemoteClient):
+            current_time = pygame.time.get_ticks()
+            if current_time - ctx.last_tick >= ctx.tick_interval:
+                ctx.views[ctx.client.team].knowledge = ctx.client.get_player_knowledge(ctx.client.team, ctx.client.get_current_tick()+1)
+                ctx.last_tick = current_time
+        else:
+            raise ValueError(f"Unknown client type: {type(ctx.client)}")
 
         # Draw
         draw_ui(ctx)
