@@ -31,8 +31,6 @@ class PlayerKnowledge:
 
     def add_raw_observations(self, game: GameState, observations: RawObservations) -> None:
         self.all_observations.setdefault(game.tick, {}).update(observations)
-        new_keys = set(observations.keys()) - set(self.last_observations.keys())
-        if new_keys: print('new_keys', ' '.join(f'{xy.x},{xy.y}' for xy in new_keys))
         for pos, contents_list in observations.items():
             self.last_observations[pos] = (game.tick, contents_list)
             for contents in contents_list:
