@@ -222,77 +222,39 @@ def draw_food(
                 )
 
 
-def god_knowledge(game: GameState) -> PlayerKnowledge:
-    observations = game.observe_from_position(
-        Pos(0, 0), (game.grid_width + game.grid_height)
-    )
-    return PlayerKnowledge(
-        team=Team.RED,  # TODO: asymmetric
-        grid_width=game.grid_width,
-        grid_height=game.grid_height,
-        tick=game.tick,
-        all_observations={game.tick: observations},
-        last_observations={
-            pos: (game.tick, contents_list)
-            for pos, contents_list in observations.items()
-        },
-    )
-
-
 def draw_god_view(
     surface: pygame.Surface,
     state: GameState,
     offset_x: int,
     offset_y: int,
-    ui_manager: pygame_gui.UIManager,
 ) -> None:
+    """Draw the god's-eye view showing the complete game state."""
     map_pixel_width = state.grid_width * TILE_SIZE
     map_pixel_height = state.grid_height * TILE_SIZE
     bg_rect = pygame.Rect(offset_x, offset_y, map_pixel_width, map_pixel_height)
     pygame.draw.rect(surface, (30, 30, 30), bg_rect)
 
-    knowledge = god_knowledge(state)
-    # Create dummy tick controls (not actually used for rendering)
-    dummy_tick_controls = TickControls(
-        slider=pygame_gui.elements.UIHorizontalSlider(
-            relative_rect=pygame.Rect(-100, -100, 1, 1),  # Off-screen
-            start_value=0.0,
-            value_range=(0.0, 1.0),
-            manager=ui_manager,
-            visible=False,
-        ),
-        tick_label=pygame_gui.elements.UILabel(
-            relative_rect=pygame.Rect(-100, -100, 1, 1),  # Off-screen
-            text="",
-            manager=ui_manager,
-            visible=False,
-        ),
-        live_btn=pygame_gui.elements.UIButton(
-            relative_rect=pygame.Rect(-100, -100, 1, 1),  # Off-screen
-            text="",
-            manager=ui_manager,
-            visible=False,
-        ),
-    )
-    draw_player_view(
-        surface, PlayerView(knowledge, dummy_tick_controls), Team.RED, offset_x, offset_y
-    )
+    # Draw grid
+    draw_grid(surface, offset_x, offset_y, state.grid_width, state.grid_height)
 
-    # draw_grid(surface, offset_x, offset_y, state.grid_width, state.grid_height)
-    # draw_base_cell(surface, state.get_base_region(Team.RED), Team.RED, offset_x, offset_y)
-    # draw_base_cell(surface, state.get_base_region(Team.BLUE), Team.BLUE, offset_x, offset_y)
+    # Draw base regions
+    for pos in state.get_base_region(Team.RED).cells:
+        draw_base_cell(surface, pos, Team.RED, offset_x, offset_y)
+    for pos in state.get_base_region(Team.BLUE).cells:
+        draw_base_cell(surface, pos, Team.BLUE, offset_x, offset_y)
 
-    # # Draw food
-    # draw_food(surface, state.food, offset_x, offset_y)
+    # Draw food
+    draw_food(surface, state.food, offset_x, offset_y)
 
-    # for unit in state.units:
-    #     draw_unit_at(
-    #         surface,
-    #         unit.team,
-    #         unit.pos,
-    #         offset_x,
-    #         offset_y,
-    #     )
+    # Draw units
+    for unit in state.units.values():
+        draw_unit_at(
+            surface,
+            unit.team,
+            unit.pos,
+            offset_x,
+            offset_y,
+        )
 
 
 def draw_player_view(
@@ -730,7 +692,7 @@ def main() -> None:
         draw_player_view(
             screen, views[Team.RED], Team.RED, red_offset_x, views_offset_y
         )
-        draw_god_view(screen, state, god_offset_x, views_offset_y, ui_manager)
+        draw_god_view(screen, state, god_offset_x, views_offset_y)
         draw_player_view(
             screen, views[Team.BLUE], Team.BLUE, blue_offset_x, views_offset_y
         )
