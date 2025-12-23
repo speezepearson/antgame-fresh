@@ -6,22 +6,22 @@ from core import Pos, Region
 from mechanics import (
     Team, Unit, GameState, Move, Plan,
     EnemyInRangeCondition, BaseVisibleCondition, PositionReachedCondition,
-    UnitPresent, BasePresent, Empty, tick_game,
+    UnitPresent, BasePresent, Empty, tick_game, CellContents,
 )
 
 
 class TestMove:
-    def test_completes_when_unit_reaches_target(self):
+    def test_completes_when_unit_reaches_target(self) -> None:
         unit = Unit(Team.RED, Pos(5, 5), Pos(5, 5))
         move = Move(target=Pos(5, 5))
         assert move.is_complete(unit)
 
-    def test_not_complete_when_unit_away_from_target(self):
+    def test_not_complete_when_unit_away_from_target(self) -> None:
         unit = Unit(Team.RED, Pos(0, 0), Pos(0, 0))
         move = Move(target=Pos(5, 5))
         assert not move.is_complete(unit)
 
-    def test_moves_unit_horizontally(self):
+    def test_moves_unit_horizontally(self) -> None:
         unit = Unit(Team.RED, Pos(0, 5), Pos(0, 5))
         move = Move(target=Pos(3, 5))
         state = GameState()
@@ -29,7 +29,7 @@ class TestMove:
         move.execute_step(unit, state)
         assert unit.pos == Pos(1, 5)
 
-    def test_moves_unit_vertically(self):
+    def test_moves_unit_vertically(self) -> None:
         unit = Unit(Team.RED, Pos(5, 0), Pos(5, 0))
         move = Move(target=Pos(5, 3))
         state = GameState()
@@ -37,7 +37,7 @@ class TestMove:
         move.execute_step(unit, state)
         assert unit.pos == Pos(5, 1)
 
-    def test_moves_unit_closer_when_moving_diagonally(self):
+    def test_moves_unit_closer_when_moving_diagonally(self) -> None:
         unit = Unit(Team.RED, Pos(0, 0), Pos(0, 0))
         target = Pos(5, 5)
         move = Move(target=target)
@@ -49,7 +49,7 @@ class TestMove:
 
         assert final_distance < initial_distance
 
-    def test_does_not_move_when_already_at_target(self):
+    def test_does_not_move_when_already_at_target(self) -> None:
         unit = Unit(Team.RED, Pos(5, 5), Pos(5, 5))
         move = Move(target=Pos(5, 5))
         state = GameState()
@@ -59,99 +59,99 @@ class TestMove:
 
 
 class TestEnemyInRangeCondition:
-    def test_fires_when_enemy_is_close(self):
+    def test_fires_when_enemy_is_close(self) -> None:
         unit = Unit(Team.RED, Pos(5, 5), Pos(5, 5))
         condition = EnemyInRangeCondition(distance=3)
-        observations = {
+        observations: dict[Pos, list[CellContents]] = {
             Pos(7, 5): [UnitPresent(Team.BLUE)]  # Distance 2
         }
         assert condition.evaluate(unit, observations)
 
-    def test_does_not_fire_for_distant_enemy(self):
+    def test_does_not_fire_for_distant_enemy(self) -> None:
         unit = Unit(Team.RED, Pos(5, 5), Pos(5, 5))
         condition = EnemyInRangeCondition(distance=3)
-        observations = {
+        observations: dict[Pos, list[CellContents]] = {
             Pos(10, 10): [UnitPresent(Team.BLUE)]  # Distance 10
         }
         assert not condition.evaluate(unit, observations)
 
-    def test_does_not_fire_for_nearby_ally(self):
+    def test_does_not_fire_for_nearby_ally(self) -> None:
         unit = Unit(Team.RED, Pos(5, 5), Pos(5, 5))
         condition = EnemyInRangeCondition(distance=3)
-        observations = {
+        observations: dict[Pos, list[CellContents]] = {
             Pos(6, 5): [UnitPresent(Team.RED)]  # Distance 1, same team
         }
         assert not condition.evaluate(unit, observations)
 
-    def test_does_not_fire_when_no_units_visible(self):
+    def test_does_not_fire_when_no_units_visible(self) -> None:
         unit = Unit(Team.RED, Pos(5, 5), Pos(5, 5))
         condition = EnemyInRangeCondition(distance=3)
-        observations = {
+        observations: dict[Pos, list[CellContents]] = {
             Pos(6, 5): [Empty()]
         }
         assert not condition.evaluate(unit, observations)
 
-    def test_fires_when_enemy_at_exact_range(self):
+    def test_fires_when_enemy_at_exact_range(self) -> None:
         unit = Unit(Team.RED, Pos(5, 5), Pos(5, 5))
         condition = EnemyInRangeCondition(distance=3)
-        observations = {
+        observations: dict[Pos, list[CellContents]] = {
             Pos(8, 5): [UnitPresent(Team.BLUE)]  # Distance exactly 3
         }
         assert condition.evaluate(unit, observations)
 
 
 class TestBaseVisibleCondition:
-    def test_fires_when_own_base_is_visible(self):
+    def test_fires_when_own_base_is_visible(self) -> None:
         unit = Unit(Team.RED, Pos(5, 5), Pos(5, 5))
         condition = BaseVisibleCondition()
-        observations = {
+        observations: dict[Pos, list[CellContents]] = {
             Pos(2, 16): [BasePresent(Team.RED)]
         }
         assert condition.evaluate(unit, observations)
 
-    def test_does_not_fire_for_enemy_base(self):
+    def test_does_not_fire_for_enemy_base(self) -> None:
         unit = Unit(Team.RED, Pos(5, 5), Pos(5, 5))
         condition = BaseVisibleCondition()
-        observations = {
+        observations: dict[Pos, list[CellContents]] = {
             Pos(29, 16): [BasePresent(Team.BLUE)]
         }
         assert not condition.evaluate(unit, observations)
 
-    def test_does_not_fire_when_no_base_visible(self):
+    def test_does_not_fire_when_no_base_visible(self) -> None:
         unit = Unit(Team.RED, Pos(5, 5), Pos(5, 5))
         condition = BaseVisibleCondition()
-        observations = {
+        observations: dict[Pos, list[CellContents]] = {
             Pos(10, 10): [Empty()]
         }
         assert not condition.evaluate(unit, observations)
 
 
 class TestPositionReachedCondition:
-    def test_fires_when_unit_at_exact_position(self):
+    def test_fires_when_unit_at_exact_position(self) -> None:
         unit = Unit(Team.RED, Pos(5, 5), Pos(5, 5))
         condition = PositionReachedCondition(position=Pos(5, 5))
-        observations = {}
+        observations: dict[Pos, list[CellContents]] = {}
         assert condition.evaluate(unit, observations)
 
-    def test_does_not_fire_when_unit_at_different_position(self):
+    def test_does_not_fire_when_unit_at_different_position(self) -> None:
         unit = Unit(Team.RED, Pos(5, 5), Pos(5, 5))
         condition = PositionReachedCondition(position=Pos(10, 10))
-        observations = {}
+        observations: dict[Pos, list[CellContents]] = {}
         assert not condition.evaluate(unit, observations)
 
 
 class TestPlan:
-    def test_returns_first_order_as_current(self):
+    def test_returns_first_order_as_current(self) -> None:
         move1 = Move(target=Pos(1, 1))
         move2 = Move(target=Pos(2, 2))
         plan = Plan(orders=[move1, move2])
         assert plan.current_order() == move1
 
-    def test_returns_none_when_order_queue_is_empty(self):
+    def test_returns_none_when_order_queue_is_empty(self) -> None:
         plan = Plan(orders=[])
         assert plan.current_order() is None
 
-    def test_removes_current_order_when_completed(self):
+    def test_removes_current_order_when_completed(self) -> None:
         move1 = Move(target=Pos(1, 1))
         move2 = Move(target=Pos(2, 2))
         plan = Plan(orders=[move1, move2])
@@ -160,7 +160,7 @@ class TestPlan:
         assert plan.current_order() == move2
         assert len(plan.orders) == 1
 
-    def test_replaces_orders_when_interrupted(self):
+    def test_replaces_orders_when_interrupted(self) -> None:
         move1 = Move(target=Pos(1, 1))
         move2 = Move(target=Pos(2, 2))
         interrupt_order = Move(target=Pos(9, 9))
@@ -171,7 +171,7 @@ class TestPlan:
 
 
 class TestGetBaseRegion:
-    def test_red_base_is_on_left_side(self):
+    def test_red_base_is_on_left_side(self) -> None:
         random.seed(42)
         state = GameState()
         region = state.get_base_region(Team.RED)
@@ -179,7 +179,7 @@ class TestGetBaseRegion:
         for cell in region.cells:
             assert cell.x < state.grid_width // 2
 
-    def test_blue_base_is_on_right_side(self):
+    def test_blue_base_is_on_right_side(self) -> None:
         random.seed(42)
         state = GameState()
         region = state.get_base_region(Team.BLUE)
@@ -187,7 +187,7 @@ class TestGetBaseRegion:
         for cell in region.cells:
             assert cell.x >= state.grid_width // 2
 
-    def test_base_region_has_12_cells(self):
+    def test_base_region_has_12_cells(self) -> None:
         random.seed(42)
         state = GameState()
         region = state.get_base_region(Team.RED)
@@ -195,7 +195,7 @@ class TestGetBaseRegion:
 
 
 class TestGameStateGetContentsAt:
-    def test_returns_empty_for_empty_cell(self):
+    def test_returns_empty_for_empty_cell(self) -> None:
         state = GameState()
         # Clear units for this test
         state.units = []
@@ -203,7 +203,7 @@ class TestGameStateGetContentsAt:
         assert len(contents) == 1
         assert isinstance(contents[0], Empty)
 
-    def test_returns_unit_when_unit_at_position(self):
+    def test_returns_unit_when_unit_at_position(self) -> None:
         state = GameState()
         # Place a unit at a known position outside bases
         unit = Unit(Team.RED, Pos(15, 15), Pos(15, 15))
@@ -212,7 +212,7 @@ class TestGameStateGetContentsAt:
         contents = state._get_contents_at(Pos(15, 15))
         assert any(isinstance(c, UnitPresent) and c.team == Team.RED for c in contents)
 
-    def test_returns_base_when_position_in_base_region(self):
+    def test_returns_base_when_position_in_base_region(self) -> None:
         state = GameState()
         red_base = state.get_base_region(Team.RED)
         base_cell = next(iter(red_base.cells))
@@ -220,7 +220,7 @@ class TestGameStateGetContentsAt:
         contents = state._get_contents_at(base_cell)
         assert any(isinstance(c, BasePresent) and c.team == Team.RED for c in contents)
 
-    def test_returns_both_unit_and_base_when_unit_in_base(self):
+    def test_returns_both_unit_and_base_when_unit_in_base(self) -> None:
         state = GameState()
         red_base = state.get_base_region(Team.RED)
         base_cell = next(iter(red_base.cells))
@@ -234,7 +234,7 @@ class TestGameStateGetContentsAt:
 
 
 class TestGameStateObserveFromPosition:
-    def test_observes_positions_within_visibility_radius(self):
+    def test_observes_positions_within_visibility_radius(self) -> None:
         state = GameState()
         state.units = []
         observer_pos = Pos(10, 10)
@@ -247,7 +247,7 @@ class TestGameStateObserveFromPosition:
         assert Pos(18, 10) in observations  # 8 away horizontally
         assert Pos(10, 18) in observations  # 8 away vertically
 
-    def test_does_not_observe_beyond_visibility_radius(self):
+    def test_does_not_observe_beyond_visibility_radius(self) -> None:
         state = GameState()
         state.units = []
         observer_pos = Pos(10, 10)
@@ -259,7 +259,7 @@ class TestGameStateObserveFromPosition:
         assert Pos(19, 10) not in observations  # 9 away
         assert Pos(10, 19) not in observations  # 9 away
 
-    def test_respects_grid_boundaries(self):
+    def test_respects_grid_boundaries(self) -> None:
         state = GameState()
         state.units = []
         observer_pos = Pos(0, 0)
@@ -274,7 +274,7 @@ class TestGameStateObserveFromPosition:
 
 
 class TestTickGame:
-    def test_units_execute_movement_orders(self):
+    def test_units_execute_movement_orders(self) -> None:
         state = GameState()
         unit = state.units[0]
         initial_pos = unit.pos
@@ -286,7 +286,7 @@ class TestTickGame:
         # Unit should have moved one step closer
         assert unit.pos.manhattan_distance(target) < initial_pos.manhattan_distance(target)
 
-    def test_completes_and_removes_finished_orders(self):
+    def test_completes_and_removes_finished_orders(self) -> None:
         state = GameState()
         unit = state.units[0]
         # Give an already-complete order
@@ -297,7 +297,7 @@ class TestTickGame:
         # Order should be removed
         assert len(unit.plan.orders) == 0
 
-    def test_interrupts_trigger_when_condition_met(self):
+    def test_interrupts_trigger_when_condition_met(self) -> None:
         state = GameState()
         red_unit = state.units[0]  # RED unit
         blue_unit = state.units[3]  # BLUE unit
@@ -332,7 +332,7 @@ class TestTickGame:
         assert isinstance(current, Move)
         assert current.target == fallback_pos
 
-    def test_syncs_logbook_when_unit_reaches_base(self):
+    def test_syncs_logbook_when_unit_reaches_base(self) -> None:
         state = GameState()
         red_unit = state.units[0]
         red_base = state.get_base_region(Team.RED)
