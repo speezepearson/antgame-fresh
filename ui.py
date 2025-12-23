@@ -54,8 +54,7 @@ def format_plan(plan: Plan, unit: Unit) -> list[str]:
         lines.append("Interrupts:")
         for interrupt in plan.interrupts:
             condition_desc = _describe_condition(interrupt.condition)
-            action_desc = ", ".join(_describe_order(order) for order in interrupt.action)
-            lines.append(f"  If {condition_desc}: {action_desc}")
+            lines.append(f"  If {condition_desc}: <action>")
 
     return lines
 

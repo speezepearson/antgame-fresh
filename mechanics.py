@@ -4,7 +4,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Protocol
+from typing import Protocol, TypeVar, Generic, Callable
 import random
 
 from core import Timestamp, Pos, Region
@@ -87,57 +87,79 @@ class Move(Order):
             unit.pos = Pos(unit.pos.x, unit.pos.y + dy)
 
 
-class Condition(Protocol):
-    """Protocol for conditions that can trigger interrupts."""
+T = TypeVar('T', covariant=True)
 
-    def evaluate(self, unit: "Unit", observations: dict[Pos, list[CellContents]]) -> bool:
-        """Evaluate if this condition is true."""
+
+class Condition(Protocol[T]):
+    """Protocol for conditions that can trigger interrupts.
+
+    Returns T | None when evaluated - None means condition not met,
+    otherwise returns data to pass to the interrupt action.
+    """
+
+    def evaluate(self, unit: "Unit", observations: dict[Pos, list[CellContents]]) -> T | None:
+        """Evaluate this condition. Returns data if condition is met, None otherwise."""
         ...
 
 
 @dataclass(frozen=True)
 class EnemyInRangeCondition:
-    """Condition: enemy unit is within a certain distance."""
+    """Condition: enemy unit is within a certain distance.
+
+    Returns the position of the first enemy found within range.
+    """
 
     distance: int
 
-    def evaluate(self, unit: "Unit", observations: dict[Pos, list[CellContents]]) -> bool:
+    def evaluate(self, unit: "Unit", observations: dict[Pos, list[CellContents]]) -> Pos | None:
         for pos, contents_list in observations.items():
             for contents in contents_list:
                 if isinstance(contents, UnitPresent) and contents.team != unit.team:
                     if unit.pos.manhattan_distance(pos) <= self.distance:
-                        return True
-        return False
+                        return pos
+        return None
 
 
 @dataclass(frozen=True)
 class BaseVisibleCondition:
-    """Condition: home base is visible."""
+    """Condition: home base is visible.
 
-    def evaluate(self, unit: "Unit", observations: dict[Pos, list[CellContents]]) -> bool:
+    Returns the position of the first base cell found.
+    """
+
+    def evaluate(self, unit: "Unit", observations: dict[Pos, list[CellContents]]) -> Pos | None:
         for pos, contents_list in observations.items():
             for contents in contents_list:
                 if isinstance(contents, BasePresent) and contents.team == unit.team:
-                    return True
-        return False
+                    return pos
+        return None
 
 
 @dataclass(frozen=True)
 class PositionReachedCondition:
-    """Condition: unit has reached a specific position."""
+    """Condition: unit has reached a specific position.
+
+    Returns the position when reached.
+    """
 
     position: Pos
 
-    def evaluate(self, unit: "Unit", observations: dict[Pos, list[CellContents]]) -> bool:
-        return unit.pos == self.position
+    def evaluate(self, unit: "Unit", observations: dict[Pos, list[CellContents]]) -> Pos | None:
+        if unit.pos == self.position:
+            return self.position
+        return None
 
 
 @dataclass
-class Interrupt:
-    """An interrupt handler that can preempt a plan when a condition is met."""
+class Interrupt(Generic[T]):
+    """An interrupt handler that can preempt a plan when a condition is met.
 
-    condition: Condition
-    action: list[Order]
+    When the condition evaluates to a non-None value, that value is passed
+    to the action callable to generate new orders.
+    """
+
+    condition: Condition[T]
+    action: Callable[[T], list[Order]]
 
 
 @dataclass
@@ -379,9 +401,11 @@ def tick_game(state: GameState) -> None:
 
         # Check each interrupt condition
         for interrupt in unit.plan.interrupts:
-            if interrupt.condition.evaluate(unit, observations):
-                # First matching interrupt triggers: replace order queue
-                unit.plan.interrupt_with(interrupt.action)
+            result = interrupt.condition.evaluate(unit, observations)
+            if result is not None:
+                # First matching interrupt triggers: call action with result and replace order queue
+                new_orders = interrupt.action(result)
+                unit.plan.interrupt_with(new_orders)
                 break  # Only first matching interrupt per tick
 
     # 3. Execute current order for each unit
