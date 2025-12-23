@@ -333,6 +333,7 @@ def main() -> None:
     padding = 10
     label_height = 25
     slider_height = 30
+    plan_area_height = 150  # Space for plan display and buttons below player maps
 
     # Create the game state first to get grid dimensions
     food_config = FoodConfig(
@@ -347,7 +348,7 @@ def main() -> None:
     map_pixel_size = state.grid_width * TILE_SIZE
 
     window_width = map_pixel_size * 3 + padding * 4
-    window_height = map_pixel_size + padding * 2 + label_height + slider_height
+    window_height = map_pixel_size + padding * 2 + label_height + slider_height + plan_area_height
 
     screen = pygame.display.set_mode((window_width, window_height))
     pygame.display.set_caption("Ant RTS")
@@ -500,19 +501,38 @@ def main() -> None:
         issue_plan_rect: pygame.Rect | None = None
         clear_plan_rect: pygame.Rect | None = None
         if state.selected_unit is not None:
+            # Determine which player's map to show the plan under
             team_name = state.selected_unit.team.value
+            plan_offset_x = red_offset_x if state.selected_unit.team == Team.RED else blue_offset_x
+
+            # Show selection indicator in God's Eye view area
             sel_text = font.render(
                 f"Selected: {team_name} unit - click {team_name}'s map to add waypoints",
                 True, (255, 255, 0),
             )
             screen.blit(sel_text, (god_offset_x, slider_y))
 
-            # Draw "Issue Plan" and "Clear" buttons
-            btn_y = slider_y
+            # Display the working plan below the player's slider
+            plan_y = slider_y + 30  # Start below the slider
+            if state.working_plan is not None:
+                plan_lines = format_plan(state.working_plan, state.selected_unit)
+                y_offset = plan_y
+                for line in plan_lines:
+                    plan_text = font.render(line, True, (200, 200, 200))
+                    screen.blit(plan_text, (plan_offset_x, y_offset))
+                    y_offset += 20  # Line spacing
+
+                # Position buttons below the plan
+                btn_y = y_offset + 5
+            else:
+                # No plan, position buttons below slider
+                btn_y = plan_y
+
+            # Draw "Issue Plan" and "Clear" buttons below the plan
             btn_height = 20
 
             # Issue Plan button
-            issue_plan_rect = pygame.Rect(god_offset_x + 500, btn_y, 80, btn_height)
+            issue_plan_rect = pygame.Rect(plan_offset_x, btn_y, 80, btn_height)
             btn_color = (50, 150, 50) if state.working_plan and state.working_plan.orders else (80, 80, 80)
             pygame.draw.rect(screen, btn_color, issue_plan_rect)
             pygame.draw.rect(screen, (150, 150, 150), issue_plan_rect, 1)
@@ -520,20 +540,11 @@ def main() -> None:
             screen.blit(issue_text, (issue_plan_rect.x + 5, issue_plan_rect.y + 4))
 
             # Clear button
-            clear_plan_rect = pygame.Rect(god_offset_x + 590, btn_y, 50, btn_height)
+            clear_plan_rect = pygame.Rect(plan_offset_x + 90, btn_y, 50, btn_height)
             pygame.draw.rect(screen, (150, 50, 50), clear_plan_rect)
             pygame.draw.rect(screen, (150, 150, 150), clear_plan_rect, 1)
             clear_text = font.render("Clear", True, (255, 255, 255))
             screen.blit(clear_text, (clear_plan_rect.x + 8, clear_plan_rect.y + 4))
-
-            # Display the working plan below the selection indicator
-            if state.working_plan is not None:
-                plan_lines = format_plan(state.working_plan, state.selected_unit)
-                y_offset = slider_y + 25  # Start below the selection text
-                for line in plan_lines:
-                    plan_text = font.render(line, True, (200, 200, 200))
-                    screen.blit(plan_text, (god_offset_x, y_offset))
-                    y_offset += 20  # Line spacing
 
         pygame.display.flip()
         clock.tick(60)
