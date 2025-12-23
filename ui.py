@@ -490,6 +490,12 @@ def main() -> None:
     slider_y = views_offset_y + map_pixel_size + 5
     slider_width = map_pixel_size - 100
 
+    # Map teams to their view offsets
+    team_offsets = {
+        Team.RED: red_offset_x,
+        Team.BLUE: blue_offset_x,
+    }
+
     # Create time sliders for RED team
     red_tick_controls = TickControls(
         slider=pygame_gui.elements.UIHorizontalSlider(
@@ -617,63 +623,35 @@ def main() -> None:
                 if ui_manager.get_hovering_any_element():
                     continue
 
-                # Check RED player view for unit selection or target
-                grid_pos = screen_to_grid(
-                    mx,
-                    my,
-                    red_offset_x,
-                    views_offset_y,
-                    state.grid_width,
-                    state.grid_height,
-                )
-                red_view = views[Team.RED]
-                # Only allow interaction when viewing live (not a freeze frame)
-                if grid_pos is not None and red_view.freeze_frame is None:
-                    if red_view.selected_unit_id is not None:
-                        # Append Move order to working plan
-                        if red_view.working_plan is None:
-                            red_view.working_plan = Plan(
-                                interrupts=make_default_interrupts()
-                            )
-                        red_view.working_plan.orders.append(Move(target=grid_pos))
-                    else:
-                        # Try to select a unit
-                        unit = find_unit_at_base(state, grid_pos, Team.RED)
-                        if unit is not None:
-                            red_view.selected_unit_id = unit.id
-                            # Initialize working plan when selecting a unit
-                            red_view.working_plan = Plan(
-                                interrupts=make_default_interrupts()
-                            )
-
-                # Check BLUE player view for unit selection or target
-                grid_pos = screen_to_grid(
-                    mx,
-                    my,
-                    blue_offset_x,
-                    views_offset_y,
-                    state.grid_width,
-                    state.grid_height,
-                )
-                blue_view = views[Team.BLUE]
-                # Only allow interaction when viewing live (not a freeze frame)
-                if grid_pos is not None and blue_view.freeze_frame is None:
-                    if blue_view.selected_unit_id is not None:
-                        # Append Move order to working plan
-                        if blue_view.working_plan is None:
-                            blue_view.working_plan = Plan(
-                                interrupts=make_default_interrupts()
-                            )
-                        blue_view.working_plan.orders.append(Move(target=grid_pos))
-                    else:
-                        # Try to select a unit
-                        unit = find_unit_at_base(state, grid_pos, Team.BLUE)
-                        if unit is not None:
-                            blue_view.selected_unit_id = unit.id
-                            # Initialize working plan when selecting a unit
-                            blue_view.working_plan = Plan(
-                                interrupts=make_default_interrupts()
-                            )
+                # Check each team's player view for unit selection or target
+                for team in [Team.RED, Team.BLUE]:
+                    grid_pos = screen_to_grid(
+                        mx,
+                        my,
+                        team_offsets[team],
+                        views_offset_y,
+                        state.grid_width,
+                        state.grid_height,
+                    )
+                    view = views[team]
+                    # Only allow interaction when viewing live (not a freeze frame)
+                    if grid_pos is not None and view.freeze_frame is None:
+                        if view.selected_unit_id is not None:
+                            # Append Move order to working plan
+                            if view.working_plan is None:
+                                view.working_plan = Plan(
+                                    interrupts=make_default_interrupts()
+                                )
+                            view.working_plan.orders.append(Move(target=grid_pos))
+                        else:
+                            # Try to select a unit
+                            unit = find_unit_at_base(state, grid_pos, team)
+                            if unit is not None:
+                                view.selected_unit_id = unit.id
+                                # Initialize working plan when selecting a unit
+                                view.working_plan = Plan(
+                                    interrupts=make_default_interrupts()
+                                )
 
         # Game tick
         if current_time - last_tick >= tick_interval:
@@ -723,7 +701,7 @@ def main() -> None:
         # Handle plan controls for each team
         for team in [Team.RED, Team.BLUE]:
             view = views[team]
-            plan_offset_x = red_offset_x if team == Team.RED else blue_offset_x
+            plan_offset_x = team_offsets[team]
 
             if view.selected_unit_id is not None:
                 # Get the selected unit
