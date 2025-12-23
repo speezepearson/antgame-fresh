@@ -313,6 +313,10 @@ def find_unit_at_base(state: GameState, pos: Pos, team: Team) -> Unit | None:
 def main() -> None:
     # Parse command-line arguments
     parser = argparse.ArgumentParser(description='Ant RTS Game')
+    parser.add_argument('--width', type=int, default=GRID_SIZE,
+                        help='Width of the grid (default: 32)')
+    parser.add_argument('--height', type=int, default=GRID_SIZE,
+                        help='Height of the grid (default: 32)')
     parser.add_argument('--food-scale', type=float, default=10.0,
                         help='Perlin noise scale for food generation (default: 10.0)')
     parser.add_argument('--food-max-prob', type=float, default=0.1,
@@ -334,7 +338,7 @@ def main() -> None:
         max_prob=args.food_max_prob,
         seed=args.food_seed,
     )
-    state = GameState(food_config=food_config)
+    state = GameState(grid_width=args.width, grid_height=args.height, food_config=food_config)
     map_pixel_size = state.grid_width * TILE_SIZE
 
     window_width = map_pixel_size * 3 + padding * 4
