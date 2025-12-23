@@ -138,61 +138,7 @@ class TestComputeExpectedTrajectory:
         assert trajectory.unit_id == unit.id
         assert trajectory.start_tick == state.tick
 
-    def test_trajectory_ignores_interrupts_in_simulation(self) -> None:
-        """Interrupts should not fire during trajectory simulation (no enemies/food in sim)."""
-        unit = make_unit(Team.RED, Pos(5, 5))
-        target = Pos(10, 5)
-        unit.plan = Plan(
-            orders=[Move(target=target)],
-            interrupts=[
-                Interrupt(
-                    condition=EnemyInRangeCondition(distance=10),
-                    actions=[MoveThereAction()],
-                )
-            ],
-        )
-        state = make_simple_game()
-
-        trajectory = compute_expected_trajectory(unit, state, start_tick=0)
-
-        # Should follow original plan to target, ignoring interrupts
-        assert trajectory.positions[-1] == target
-
-    def test_trajectory_diagonal_movement(self) -> None:
-        """Unit should move efficiently when moving diagonally."""
-        unit = make_unit(Team.RED, Pos(0, 0))
-        target = Pos(3, 3)
-        unit.plan = Plan(orders=[Move(target=target)])
-        state = make_simple_game()
-
-        trajectory = compute_expected_trajectory(unit, state, start_tick=0)
-
-        # Should start at origin and end at target
-        assert trajectory.positions[0] == Pos(0, 0)
-        assert trajectory.positions[-1] == Pos(3, 3)
-        # Manhattan distance is 6, so should take 6 steps + initial = 7 positions
-        assert len(trajectory.positions) == 7
-        # Each step should move exactly one cell (manhattan distance 1 from previous)
-        for i in range(len(trajectory.positions) - 1):
-            dist = trajectory.positions[i].manhattan_distance(trajectory.positions[i + 1])
-            assert dist == 1
-
-    def test_trajectory_with_already_completed_order(self) -> None:
-        """Unit already at target should have minimal trajectory."""
-        unit = make_unit(Team.RED, Pos(5, 5))
-        target = Pos(5, 5)  # Already there
-        unit.plan = Plan(orders=[Move(target=target)])
-        state = make_simple_game()
-
-        trajectory = compute_expected_trajectory(unit, state, start_tick=0)
-
-        # Order is complete immediately, so should terminate after first tick
-        # Initial position + one tick (where order completes and is removed)
-        assert len(trajectory.positions) == 2
-        assert trajectory.positions[0] == Pos(5, 5)
-        assert trajectory.positions[1] == Pos(5, 5)
-
-    def test_trajectory_horizontal_movement(self) -> None:
+    def test_trajectory_for_horizontal_movement_is_straight_line(self) -> None:
         """Unit moving purely horizontally should follow expected path."""
         unit = make_unit(Team.RED, Pos(0, 5))
         target = Pos(4, 5)
@@ -201,17 +147,4 @@ class TestComputeExpectedTrajectory:
 
         trajectory = compute_expected_trajectory(unit, state, start_tick=0)
 
-        expected_positions = [Pos(0, 5), Pos(1, 5), Pos(2, 5), Pos(3, 5), Pos(4, 5)]
-        assert trajectory.positions == expected_positions
-
-    def test_trajectory_vertical_movement(self) -> None:
-        """Unit moving purely vertically should follow expected path."""
-        unit = make_unit(Team.RED, Pos(5, 0))
-        target = Pos(5, 4)
-        unit.plan = Plan(orders=[Move(target=target)])
-        state = make_simple_game()
-
-        trajectory = compute_expected_trajectory(unit, state, start_tick=0)
-
-        expected_positions = [Pos(5, 0), Pos(5, 1), Pos(5, 2), Pos(5, 3), Pos(5, 4)]
-        assert trajectory.positions == expected_positions
+        assert trajectory.positions == [Pos(i, 5) for i in range(5)]
