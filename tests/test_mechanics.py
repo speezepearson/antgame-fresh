@@ -259,8 +259,8 @@ class TestGameStateObserveFromPosition:
 
         # All observed positions should be on the grid
         for pos in observations.keys():
-            assert 0 <= pos.x < 32  # GRID_SIZE
-            assert 0 <= pos.y < 32
+            assert 0 <= pos.x < state.grid_width
+            assert 0 <= pos.y < state.grid_height
 
 
 class TestTickGame:

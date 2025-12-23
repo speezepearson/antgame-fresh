@@ -161,12 +161,12 @@ class Plan:
         self.orders = list(action)
 
 
-def get_base_region(team: Team) -> Region:
+def get_base_region(team: Team, grid_width: int = GRID_SIZE, grid_height: int = GRID_SIZE) -> Region:
     """Get the base region for a team."""
     if team == Team.RED:
-        center = Pos(2, GRID_SIZE // 2)
+        center = Pos(2, grid_height // 2)
     else:
-        center = Pos(GRID_SIZE - 3, GRID_SIZE // 2)
+        center = Pos(grid_width - 3, grid_height // 2)
 
     # Create a 5x5 square centered on the position
     cells = frozenset(
@@ -213,16 +213,19 @@ class GameState:
     view_tick: dict[Team, Timestamp] = field(default_factory=dict)
     # Whether each player's view auto-advances to current tick
     view_live: dict[Team, bool] = field(default_factory=dict)
+    # Grid dimensions
+    grid_width: int = GRID_SIZE
+    grid_height: int = GRID_SIZE
 
     def __post_init__(self) -> None:
-        red_region = get_base_region(Team.RED)
-        blue_region = get_base_region(Team.BLUE)
+        red_region = get_base_region(Team.RED, self.grid_width, self.grid_height)
+        blue_region = get_base_region(Team.BLUE, self.grid_width, self.grid_height)
 
         # Get center positions from regions for spawning
         red_cells = list(red_region.cells)
         blue_cells = list(blue_region.cells)
-        red_center = Pos(2, GRID_SIZE // 2)
-        blue_center = Pos(GRID_SIZE - 3, GRID_SIZE // 2)
+        red_center = Pos(2, self.grid_height // 2)
+        blue_center = Pos(self.grid_width - 3, self.grid_height // 2)
 
         # Spawn 3 units inside each base
         for i in range(3):
@@ -243,7 +246,7 @@ class GameState:
 
     def get_base_region(self, team: Team) -> Region:
         """Get a team's base region."""
-        return get_base_region(team)
+        return get_base_region(team, self.grid_width, self.grid_height)
 
     def get_base_pos(self, team: Team) -> Pos:
         """Get a position in the team's base (deprecated, for backward compatibility)."""
@@ -268,7 +271,7 @@ class GameState:
             for dy in range(-VISIBILITY_RADIUS, VISIBILITY_RADIUS + 1):
                 if abs(dx) + abs(dy) <= VISIBILITY_RADIUS:
                     pos = Pos(observer_pos.x + dx, observer_pos.y + dy)
-                    if 0 <= pos.x < GRID_SIZE and 0 <= pos.y < GRID_SIZE:
+                    if 0 <= pos.x < self.grid_width and 0 <= pos.y < self.grid_height:
                         # Check what's at this position
                         contents = self._get_contents_at(pos)
                         observations[pos] = contents
