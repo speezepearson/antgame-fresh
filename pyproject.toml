@@ -19,6 +19,7 @@ dev = [
     "ipython>=9.8.0",
     "types-requests>=2.32.4.20250913",
     "types-flask>=1.1.6",
+    "responses>=0.25.8",
 ]
 
 [tool.mypy]

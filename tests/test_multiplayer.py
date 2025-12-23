@@ -1,6 +1,7 @@
 """Tests for multiplayer functionality: serialization, server, and client."""
 
 import pytest
+import responses
 import threading
 import time
 from typing import Any
