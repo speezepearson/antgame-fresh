@@ -1,11 +1,12 @@
 """Tests for game mechanics."""
 
+import random
 import pytest
 from core import Pos, Region
 from mechanics import (
     Team, Unit, GameState, Move, Plan,
     EnemyInRangeCondition, BaseVisibleCondition, PositionReachedCondition,
-    UnitPresent, BasePresent, Empty, get_base_region, tick_game,
+    UnitPresent, BasePresent, Empty, tick_game,
 )
 
 
@@ -171,20 +172,26 @@ class TestPlan:
 
 class TestGetBaseRegion:
     def test_red_base_is_on_left_side(self):
-        region = get_base_region(Team.RED)
-        # All cells should have small x values
+        random.seed(42)
+        state = GameState()
+        region = state.get_base_region(Team.RED)
+        # All cells should have small x values (left half of grid)
         for cell in region.cells:
-            assert cell.x < 10
+            assert cell.x < state.grid_width // 2
 
     def test_blue_base_is_on_right_side(self):
-        region = get_base_region(Team.BLUE)
-        # All cells should have large x values (near GRID_SIZE)
+        random.seed(42)
+        state = GameState()
+        region = state.get_base_region(Team.BLUE)
+        # All cells should have large x values (right half of grid)
         for cell in region.cells:
-            assert cell.x > 20
+            assert cell.x >= state.grid_width // 2
 
-    def test_base_region_is_5x5(self):
-        region = get_base_region(Team.RED)
-        assert len(region.cells) == 25
+    def test_base_region_has_12_cells(self):
+        random.seed(42)
+        state = GameState()
+        region = state.get_base_region(Team.RED)
+        assert len(region.cells) == 12
 
 
 class TestGameStateGetContentsAt:
@@ -207,7 +214,7 @@ class TestGameStateGetContentsAt:
 
     def test_returns_base_when_position_in_base_region(self):
         state = GameState()
-        red_base = get_base_region(Team.RED)
+        red_base = state.get_base_region(Team.RED)
         base_cell = next(iter(red_base.cells))
 
         contents = state._get_contents_at(base_cell)
@@ -215,7 +222,7 @@ class TestGameStateGetContentsAt:
 
     def test_returns_both_unit_and_base_when_unit_in_base(self):
         state = GameState()
-        red_base = get_base_region(Team.RED)
+        red_base = state.get_base_region(Team.RED)
         base_cell = next(iter(red_base.cells))
         unit = Unit(Team.RED, base_cell, base_cell)
         state.units = [unit]
@@ -325,7 +332,7 @@ class TestTickGame:
     def test_syncs_logbook_when_unit_reaches_base(self):
         state = GameState()
         red_unit = state.units[0]
-        red_base = get_base_region(Team.RED)
+        red_base = state.get_base_region(Team.RED)
         base_cell = next(iter(red_base.cells))
 
         # Position unit in base and give it some observations
