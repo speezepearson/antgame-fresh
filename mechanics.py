@@ -20,9 +20,6 @@ GRID_SIZE = 32
 class FoodConfig:
     """Configuration for Perlin noise-based food generation."""
     scale: float = 10.0
-    octaves: int = 3
-    persistence: float = 0.5
-    lacunarity: float = 2.0
     max_prob: float = 0.0
     seed: int | None = None
 
@@ -317,12 +314,8 @@ def _generate_food(config: FoodConfig, grid_width: int = GRID_SIZE, grid_height:
     Returns:
         A dict mapping Pos to food count at that position
     """
-    # Set random seed if provided
-    seed = config.seed if config.seed is not None else random.randint(0, 1000000)
 
-    food_counts: dict[Pos, int] = {}
-
-    noise = perlin(grid_width, grid_height, seed=seed)
+    noise = perlin(grid_width, grid_height, seed=config.seed if config.seed is not None else random.randint(0, 1000000))
 
     # Perlin noise returns values in range [-1, 1], normalize to [0, 1]
     normalized_value = (noise + 1) / 2
@@ -334,11 +327,12 @@ def _generate_food(config: FoodConfig, grid_width: int = GRID_SIZE, grid_height:
     # Generate food count using Poisson distribution
     food_counts_grid = np.random.poisson(poisson_mean)
 
-    for x in range(grid_width):
-        for y in range(grid_height):
-            food_counts[Pos(x, y)] = int(food_counts_grid[x, y])
-
-    return food_counts
+    return {
+        Pos(x, y): int(food_counts_grid[x, y])
+        for x in range(grid_width)
+        for y in range(grid_height)
+        if food_counts_grid[x, y] > 0
+    }
 
 
 @dataclass
