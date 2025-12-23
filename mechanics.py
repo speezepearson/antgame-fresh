@@ -162,12 +162,14 @@ class Plan:
         self.orders = list(action)
 
 
-def _generate_random_base(seed_pos: Pos, target_size: int = 12) -> Region:
+def _generate_random_base(seed_pos: Pos, target_size: int = 12, grid_width: int = GRID_SIZE, grid_height: int = GRID_SIZE) -> Region:
     """Generate a random base region by growing from a seed position.
 
     Args:
         seed_pos: Starting position for the base
         target_size: Number of cells in the final base (default: 12)
+        grid_width: Width of the grid (default: GRID_SIZE)
+        grid_height: Height of the grid (default: GRID_SIZE)
 
     Returns:
         A Region containing exactly target_size cells
@@ -186,8 +188,8 @@ def _generate_random_base(seed_pos: Pos, target_size: int = 12) -> Region:
             ]
             for neighbor in neighbors:
                 # Check if neighbor is on the grid and not already in the base
-                if (0 <= neighbor.x < GRID_SIZE and
-                    0 <= neighbor.y < GRID_SIZE and
+                if (0 <= neighbor.x < grid_width and
+                    0 <= neighbor.y < grid_height and
                     neighbor not in cells):
                     candidates.add(neighbor)
 
@@ -236,21 +238,24 @@ class GameState:
     view_tick: dict[Team, Timestamp] = field(default_factory=dict)
     # Whether each player's view auto-advances to current tick
     view_live: dict[Team, bool] = field(default_factory=dict)
+    # Grid dimensions
+    grid_width: int = GRID_SIZE
+    grid_height: int = GRID_SIZE
 
     def __post_init__(self) -> None:
         # Generate random base regions
         # RED starts on left half, BLUE on right half to keep them separated
         red_seed = Pos(
-            random.randint(0, GRID_SIZE // 2 - 1),
-            random.randint(0, GRID_SIZE - 1)
+            random.randint(0, self.grid_width // 2 - 1),
+            random.randint(0, self.grid_height - 1)
         )
         blue_seed = Pos(
-            random.randint(GRID_SIZE // 2, GRID_SIZE - 1),
-            random.randint(0, GRID_SIZE - 1)
+            random.randint(self.grid_width // 2, self.grid_width - 1),
+            random.randint(0, self.grid_height - 1)
         )
 
-        self.base_regions[Team.RED] = _generate_random_base(red_seed, target_size=12)
-        self.base_regions[Team.BLUE] = _generate_random_base(blue_seed, target_size=12)
+        self.base_regions[Team.RED] = _generate_random_base(red_seed, target_size=12, grid_width=self.grid_width, grid_height=self.grid_height)
+        self.base_regions[Team.BLUE] = _generate_random_base(blue_seed, target_size=12, grid_width=self.grid_width, grid_height=self.grid_height)
 
         # Spawn 3 units at random positions within each base
         red_cells = list(self.base_regions[Team.RED].cells)
@@ -301,7 +306,7 @@ class GameState:
             for dy in range(-VISIBILITY_RADIUS, VISIBILITY_RADIUS + 1):
                 if abs(dx) + abs(dy) <= VISIBILITY_RADIUS:
                     pos = Pos(observer_pos.x + dx, observer_pos.y + dy)
-                    if 0 <= pos.x < GRID_SIZE and 0 <= pos.y < GRID_SIZE:
+                    if 0 <= pos.x < self.grid_width and 0 <= pos.y < self.grid_height:
                         # Check what's at this position
                         contents = self._get_contents_at(pos)
                         observations[pos] = contents

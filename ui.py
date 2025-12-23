@@ -13,7 +13,6 @@ from mechanics import (
 
 # Rendering Constants
 TILE_SIZE = 16
-MAP_PIXEL_SIZE = GRID_SIZE * TILE_SIZE
 
 
 # Plan display helpers
@@ -61,18 +60,20 @@ def format_plan(plan: Plan, unit: Unit) -> list[str]:
     return lines
 
 
-def draw_grid(surface: pygame.Surface, offset_x: int, offset_y: int) -> None:
-    for x in range(GRID_SIZE + 1):
+def draw_grid(surface: pygame.Surface, offset_x: int, offset_y: int, grid_width: int, grid_height: int) -> None:
+    map_pixel_width = grid_width * TILE_SIZE
+    map_pixel_height = grid_height * TILE_SIZE
+    for x in range(grid_width + 1):
         pygame.draw.line(
             surface, (50, 50, 50),
             (offset_x + x * TILE_SIZE, offset_y),
-            (offset_x + x * TILE_SIZE, offset_y + MAP_PIXEL_SIZE),
+            (offset_x + x * TILE_SIZE, offset_y + map_pixel_height),
         )
-    for y in range(GRID_SIZE + 1):
+    for y in range(grid_height + 1):
         pygame.draw.line(
             surface, (50, 50, 50),
             (offset_x, offset_y + y * TILE_SIZE),
-            (offset_x + MAP_PIXEL_SIZE, offset_y + y * TILE_SIZE),
+            (offset_x + map_pixel_width, offset_y + y * TILE_SIZE),
         )
 
 
@@ -114,10 +115,12 @@ def draw_god_view(
     offset_x: int,
     offset_y: int,
 ) -> None:
-    bg_rect = pygame.Rect(offset_x, offset_y, MAP_PIXEL_SIZE, MAP_PIXEL_SIZE)
+    map_pixel_width = state.grid_width * TILE_SIZE
+    map_pixel_height = state.grid_height * TILE_SIZE
+    bg_rect = pygame.Rect(offset_x, offset_y, map_pixel_width, map_pixel_height)
     pygame.draw.rect(surface, (30, 30, 30), bg_rect)
 
-    draw_grid(surface, offset_x, offset_y)
+    draw_grid(surface, offset_x, offset_y, state.grid_width, state.grid_height)
     draw_base(surface, state.get_base_region(Team.RED), Team.RED, offset_x, offset_y)
     draw_base(surface, state.get_base_region(Team.BLUE), Team.BLUE, offset_x, offset_y)
 
@@ -139,10 +142,12 @@ def draw_player_view(
     view_t = state.view_tick[team]
     logbook = state.base_logbooks[team]
 
-    bg_rect = pygame.Rect(offset_x, offset_y, MAP_PIXEL_SIZE, MAP_PIXEL_SIZE)
+    map_pixel_width = state.grid_width * TILE_SIZE
+    map_pixel_height = state.grid_height * TILE_SIZE
+    bg_rect = pygame.Rect(offset_x, offset_y, map_pixel_width, map_pixel_height)
     pygame.draw.rect(surface, (20, 20, 20), bg_rect)
 
-    draw_grid(surface, offset_x, offset_y)
+    draw_grid(surface, offset_x, offset_y, state.grid_width, state.grid_height)
 
     # Get observations for this timestamp
     if view_t in logbook:
@@ -159,7 +164,7 @@ def draw_player_view(
             pygame.draw.rect(surface, (40, 40, 40), rect)
 
         # Redraw grid on top
-        draw_grid(surface, offset_x, offset_y)
+        draw_grid(surface, offset_x, offset_y, state.grid_width, state.grid_height)
 
         # Draw observed contents (bases first, then units on top)
         drawn_bases = set()
@@ -226,11 +231,13 @@ def draw_slider(
     return slider_rect, live_btn_rect
 
 
-def screen_to_grid(mouse_x: int, mouse_y: int, offset_x: int, offset_y: int) -> Pos | None:
+def screen_to_grid(mouse_x: int, mouse_y: int, offset_x: int, offset_y: int, grid_width: int, grid_height: int) -> Pos | None:
     rel_x = mouse_x - offset_x
     rel_y = mouse_y - offset_y
 
-    if 0 <= rel_x < MAP_PIXEL_SIZE and 0 <= rel_y < MAP_PIXEL_SIZE:
+    map_pixel_width = grid_width * TILE_SIZE
+    map_pixel_height = grid_height * TILE_SIZE
+    if 0 <= rel_x < map_pixel_width and 0 <= rel_y < map_pixel_height:
         return Pos(rel_x // TILE_SIZE, rel_y // TILE_SIZE)
     return None
 
@@ -252,8 +259,13 @@ def main() -> None:
     padding = 10
     label_height = 25
     slider_height = 30
-    window_width = MAP_PIXEL_SIZE * 3 + padding * 4
-    window_height = MAP_PIXEL_SIZE + padding * 2 + label_height + slider_height
+
+    # Create the game state first to get grid dimensions
+    state = GameState()
+    map_pixel_size = state.grid_width * TILE_SIZE
+
+    window_width = map_pixel_size * 3 + padding * 4
+    window_height = map_pixel_size + padding * 2 + label_height + slider_height
 
     screen = pygame.display.set_mode((window_width, window_height))
     pygame.display.set_caption("Ant RTS")
@@ -261,11 +273,10 @@ def main() -> None:
     font = pygame.font.Font(None, 20)
 
     clock = pygame.time.Clock()
-    state = GameState()
 
     red_offset_x = padding
-    god_offset_x = padding * 2 + MAP_PIXEL_SIZE
-    blue_offset_x = padding * 3 + MAP_PIXEL_SIZE * 2
+    god_offset_x = padding * 2 + map_pixel_size
+    blue_offset_x = padding * 3 + map_pixel_size * 2
     views_offset_y = padding + label_height
 
     tick_interval = 200
@@ -316,7 +327,7 @@ def main() -> None:
                     state.working_plan = Plan()
                 else:
                     # Check RED player view for unit selection or target
-                    grid_pos = screen_to_grid(mx, my, red_offset_x, views_offset_y)
+                    grid_pos = screen_to_grid(mx, my, red_offset_x, views_offset_y, state.grid_width, state.grid_height)
                     if grid_pos is not None and state.view_tick[Team.RED] == state.tick:
                         if state.selected_unit is not None and state.selected_unit.team == Team.RED:
                             # Append Move order to working plan
@@ -332,7 +343,7 @@ def main() -> None:
                                 state.working_plan = Plan()
 
                     # Check BLUE player view for unit selection or target
-                    grid_pos = screen_to_grid(mx, my, blue_offset_x, views_offset_y)
+                    grid_pos = screen_to_grid(mx, my, blue_offset_x, views_offset_y, state.grid_width, state.grid_height)
                     if grid_pos is not None and state.view_tick[Team.BLUE] == state.tick:
                         if state.selected_unit is not None and state.selected_unit.team == Team.BLUE:
                             # Append Move order to working plan
@@ -389,8 +400,8 @@ def main() -> None:
         draw_player_view(screen, state, Team.BLUE, blue_offset_x, views_offset_y)
 
         # Sliders
-        slider_y = views_offset_y + MAP_PIXEL_SIZE + 5
-        slider_width = MAP_PIXEL_SIZE - 100
+        slider_y = views_offset_y + map_pixel_size + 5
+        slider_width = map_pixel_size - 100
 
         red_slider_rect, red_live_rect = draw_slider(
             screen, red_offset_x, slider_y, slider_width,

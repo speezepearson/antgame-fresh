@@ -1,5 +1,6 @@
 """Tests for game mechanics."""
 
+import random
 import pytest
 from core import Pos, Region
 from mechanics import (
@@ -171,20 +172,23 @@ class TestPlan:
 
 class TestGetBaseRegion:
     def test_red_base_is_on_left_side(self):
+        random.seed(42)
         state = GameState()
         region = state.get_base_region(Team.RED)
         # All cells should have small x values (left half of grid)
         for cell in region.cells:
-            assert cell.x < 16  # GRID_SIZE // 2
+            assert cell.x < state.grid_width // 2
 
     def test_blue_base_is_on_right_side(self):
+        random.seed(42)
         state = GameState()
         region = state.get_base_region(Team.BLUE)
         # All cells should have large x values (right half of grid)
         for cell in region.cells:
-            assert cell.x >= 16  # GRID_SIZE // 2
+            assert cell.x >= state.grid_width // 2
 
     def test_base_region_has_12_cells(self):
+        random.seed(42)
         state = GameState()
         region = state.get_base_region(Team.RED)
         assert len(region.cells) == 12
@@ -262,8 +266,8 @@ class TestGameStateObserveFromPosition:
 
         # All observed positions should be on the grid
         for pos in observations.keys():
-            assert 0 <= pos.x < 32  # GRID_SIZE
-            assert 0 <= pos.y < 32
+            assert 0 <= pos.x < state.grid_width
+            assert 0 <= pos.y < state.grid_height
 
 
 class TestTickGame:
