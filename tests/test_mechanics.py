@@ -6,7 +6,7 @@ from core import Pos, Region
 from mechanics import (
     Team, Unit, GameState, Move, Plan,
     EnemyInRangeCondition, BaseVisibleCondition, PositionReachedCondition,
-    UnitPresent, BasePresent, Empty, tick_game, CellContents,
+    FoodInRange, UnitPresent, BasePresent, FoodPresent, Empty, tick_game, CellContents,
 )
 
 
@@ -435,3 +435,188 @@ class TestMutualAnnihilation:
         assert blue_unit2 in state.units
         assert red_unit1 not in state.units
         assert blue_unit1 not in state.units
+
+
+class TestFoodInRange:
+    def test_fires_when_food_is_visible(self) -> None:
+        unit = Unit(Team.RED, Pos(5, 5), Pos(5, 5))
+        condition = FoodInRange()
+        observations: dict[Pos, list[CellContents]] = {
+            Pos(7, 5): [FoodPresent(count=1)]  # Distance 2
+        }
+        assert condition.evaluate(unit, observations) == Pos(7, 5)
+
+    def test_returns_nearest_food_when_multiple_visible(self) -> None:
+        unit = Unit(Team.RED, Pos(5, 5), Pos(5, 5))
+        condition = FoodInRange()
+        observations: dict[Pos, list[CellContents]] = {
+            Pos(7, 5): [FoodPresent(count=1)],  # Distance 2
+            Pos(10, 10): [FoodPresent(count=1)],  # Distance 10
+            Pos(6, 6): [FoodPresent(count=1)],  # Distance 2
+        }
+        result = condition.evaluate(unit, observations)
+        # Should return one of the closest foods (distance 2)
+        assert result in [Pos(7, 5), Pos(6, 6)]
+
+    def test_does_not_fire_when_no_food_visible(self) -> None:
+        unit = Unit(Team.RED, Pos(5, 5), Pos(5, 5))
+        condition = FoodInRange()
+        observations: dict[Pos, list[CellContents]] = {
+            Pos(6, 5): [Empty()]
+        }
+        assert condition.evaluate(unit, observations) is None
+
+
+class TestFoodObservation:
+    def test_food_appears_in_observations(self) -> None:
+        state = GameState()
+        state.units = []
+        state.food[Pos(10, 10)] = 3
+
+        contents = state._get_contents_at(Pos(10, 10))
+        assert any(isinstance(c, FoodPresent) and c.count == 3 for c in contents)
+
+    def test_no_food_when_position_has_no_food(self) -> None:
+        state = GameState()
+        state.units = []
+        state.food = {}
+
+        contents = state._get_contents_at(Pos(10, 10))
+        assert not any(isinstance(c, FoodPresent) for c in contents)
+
+
+class TestFoodMovesWithUnit:
+    def test_food_moves_when_unit_moves(self) -> None:
+        state = GameState()
+        state.units = []
+        unit = Unit(Team.RED, Pos(5, 5), Pos(5, 5))
+        state.units.append(unit)
+        state.food[Pos(5, 5)] = 2
+
+        # Give unit a move order
+        unit.plan = Plan(orders=[Move(target=Pos(10, 5))])
+
+        # Execute one tick
+        tick_game(state)
+
+        # Unit should have moved one step
+        assert unit.pos == Pos(6, 5)
+        # Food should have moved with it
+        assert Pos(5, 5) not in state.food
+        assert state.food.get(Pos(6, 5)) == 2
+
+    def test_food_does_not_move_when_unit_has_no_orders(self) -> None:
+        state = GameState()
+        state.units = []
+        unit = Unit(Team.RED, Pos(5, 5), Pos(5, 5))
+        state.units.append(unit)
+        state.food[Pos(5, 5)] = 2
+
+        # No orders for the unit
+        tick_game(state)
+
+        # Food should still be at the same position
+        assert state.food.get(Pos(5, 5)) == 2
+
+    def test_multiple_food_items_move_together(self) -> None:
+        state = GameState()
+        state.units = []
+        unit = Unit(Team.RED, Pos(5, 5), Pos(5, 5))
+        state.units.append(unit)
+        state.food[Pos(5, 5)] = 5
+
+        unit.plan = Plan(orders=[Move(target=Pos(10, 5))])
+        tick_game(state)
+
+        # All food items should move together
+        assert Pos(5, 5) not in state.food
+        assert state.food.get(Pos(6, 5)) == 5
+
+
+class TestFoodSpawnsUnits:
+    def test_food_at_base_spawns_unit_in_empty_cell(self) -> None:
+        state = GameState()
+        # Clear all units for clean test
+        state.units = []
+
+        # Get a base cell and place food there
+        red_base = state.get_base_region(Team.RED)
+        base_cell = next(iter(red_base.cells))
+        state.food[base_cell] = 1
+
+        initial_unit_count = len(state.units)
+        tick_game(state)
+
+        # A new unit should have been spawned
+        assert len(state.units) == initial_unit_count + 1
+        # Food should be consumed
+        assert state.food.get(base_cell, 0) == 0
+
+    def test_spawned_unit_is_at_closest_empty_cell(self) -> None:
+        state = GameState()
+        state.units = []
+
+        red_base = state.get_base_region(Team.RED)
+        base_cells = list(red_base.cells)
+
+        # Place food at the first cell
+        food_pos = base_cells[0]
+        state.food[food_pos] = 1
+
+        # Occupy all cells except one
+        for i in range(len(base_cells) - 1):
+            state.units.append(Unit(Team.RED, base_cells[i + 1], base_cells[i + 1]))
+
+        tick_game(state)
+
+        # A new unit should be spawned at the only empty cell
+        # The empty cell should be the one closest to the food position
+        occupied_after = {unit.pos for unit in state.units}
+        assert len(state.units) == len(base_cells)
+
+    def test_no_unit_spawned_when_base_full(self) -> None:
+        state = GameState()
+        state.units = []
+
+        red_base = state.get_base_region(Team.RED)
+        base_cells = list(red_base.cells)
+
+        # Fill all base cells with units
+        for cell in base_cells:
+            state.units.append(Unit(Team.RED, cell, cell))
+
+        # Place food at a base cell
+        state.food[base_cells[0]] = 1
+
+        initial_unit_count = len(state.units)
+        tick_game(state)
+
+        # No new unit should be spawned since base is full
+        assert len(state.units) == initial_unit_count
+        # Food should still be there
+        assert state.food.get(base_cells[0]) == 1
+
+    def test_multiple_food_items_spawn_multiple_units(self) -> None:
+        state = GameState()
+        state.units = []
+
+        red_base = state.get_base_region(Team.RED)
+        base_cell = next(iter(red_base.cells))
+
+        # Place 3 food items
+        state.food[base_cell] = 3
+
+        tick_game(state)
+
+        # First food spawns first unit
+        assert len(state.units) == 1
+        assert state.food.get(base_cell, 0) == 2
+
+        # Continue ticking to spawn more units
+        tick_game(state)
+        assert len(state.units) == 2
+        assert state.food.get(base_cell, 0) == 1
+
+        tick_game(state)
+        assert len(state.units) == 3
+        assert base_cell not in state.food
