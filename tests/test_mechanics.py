@@ -310,7 +310,7 @@ class TestTickGame:
         fallback_pos = Pos(5, 5)
         interrupt = {
             'condition': EnemyInRangeCondition(distance=3),
-            'action': [Move(target=fallback_pos)]
+            'action': lambda enemy_pos: [Move(target=fallback_pos)]
         }
         red_unit.plan = Plan(
             orders=[Move(target=Pos(20, 20))],
@@ -321,7 +321,7 @@ class TestTickGame:
         red_unit.plan.interrupts = [
             Interrupt(
                 condition=EnemyInRangeCondition(distance=3),
-                action=[Move(target=fallback_pos)]
+                action=lambda enemy_pos: [Move(target=fallback_pos)]
             )
         ]
 
