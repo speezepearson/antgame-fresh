@@ -7,9 +7,9 @@ from enum import Enum
 from typing import Protocol, TypeVar, Generic, Callable, Any
 import random
 import numpy as np
-import noise  # type: ignore
 
 from core import Timestamp, Pos, Region
+from perlin import perlin
 
 
 # Game Constants
@@ -319,43 +319,24 @@ def _generate_food(config: FoodConfig, grid_width: int = GRID_SIZE, grid_height:
     """
     # Set random seed if provided
     seed = config.seed if config.seed is not None else random.randint(0, 1000000)
-    np.random.seed(seed)
-
-    # Generate a random offset to vary the noise pattern based on seed
-    # This avoids using the buggy 'base' parameter which causes crashes
-    offset_x = np.random.uniform(0, 10000)
-    offset_y = np.random.uniform(0, 10000)
 
     food_counts: dict[Pos, int] = {}
 
+    noise = perlin(grid_width, grid_height, seed=seed)
+
+    # Perlin noise returns values in range [-1, 1], normalize to [0, 1]
+    normalized_value = (noise + 1) / 2
+
+    # Map to mean range [0, max_prob] for Poisson distribution
+    # max_prob now represents the maximum mean for the Poisson distribution
+    poisson_mean = normalized_value * config.max_prob
+
+    # Generate food count using Poisson distribution
+    food_counts_grid = np.random.poisson(poisson_mean)
+
     for x in range(grid_width):
         for y in range(grid_height):
-            # Generate Perlin noise value for this position
-            # Normalize coordinates by scale and add random offset for variation
-            noise_value = noise.pnoise2(
-                (x + offset_x) / config.scale,
-                (y + offset_y) / config.scale,
-                octaves=config.octaves,
-                persistence=config.persistence,
-                lacunarity=config.lacunarity,
-                repeatx=grid_width * 10,  # Large repeat to avoid tiling
-                repeaty=grid_height * 10,
-                base=0,  # Use fixed base=0 to avoid C extension bugs
-            )
-
-            # Perlin noise returns values in range [-1, 1], normalize to [0, 1]
-            normalized_value = (noise_value + 1) / 2
-
-            # Map to mean range [0, max_prob] for Poisson distribution
-            # max_prob now represents the maximum mean for the Poisson distribution
-            poisson_mean = normalized_value * config.max_prob
-
-            # Generate food count using Poisson distribution
-            food_count = int(np.random.poisson(poisson_mean))
-
-            # Only store non-zero counts
-            if food_count > 0:
-                food_counts[Pos(x, y)] = food_count
+            food_counts[Pos(x, y)] = int(food_counts_grid[x, y])
 
     return food_counts
 
