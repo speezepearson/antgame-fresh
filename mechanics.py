@@ -531,6 +531,12 @@ class GameState:
                 self.food.setdefault(unit.pos, 0)
                 self.food[unit.pos] += unit.carrying_food
 
+    def set_unit_plan(self, unit_id: UnitId, plan: Plan) -> None:
+        unit = self.units[unit_id]
+        if not unit.is_in_base(self):
+            raise ValueError(f"Unit {unit_id} is not in base")
+        unit.plan = plan
+
     def observe_from_position(
         self, observer_pos: Pos, visibility_radius: int
     ) -> dict[Pos, list[CellContents]]:

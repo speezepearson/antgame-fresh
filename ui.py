@@ -591,7 +591,7 @@ def main() -> None:
                                 and view.working_plan.orders
                                 and view.selected_unit_id is not None
                             ):
-                                state.units[view.selected_unit_id].plan = view.working_plan
+                                state.set_unit_plan(view.selected_unit_id, view.working_plan)
                                 view.selected_unit_id = None
                                 view.working_plan = None
                                 # Clean up plan controls
