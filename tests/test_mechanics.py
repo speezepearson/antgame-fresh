@@ -352,3 +352,86 @@ class TestTickGame:
         assert len(red_unit.logbook) == 0
         # Sync timestamp should be updated
         assert red_unit.last_sync_tick == initial_tick
+
+
+class TestMutualAnnihilation:
+    def test_opposing_units_on_same_cell_mutually_annihilate(self) -> None:
+        """When a RED and BLUE unit occupy the same cell, both should be destroyed."""
+        state = GameState(units=[])
+        red_unit = Unit(Team.RED, Pos(5, 5), Pos(5, 5))
+        blue_unit = Unit(Team.BLUE, Pos(5, 5), Pos(5, 5))
+        state.units = [red_unit, blue_unit]
+
+        tick_game(state)
+
+        # Both units should be destroyed
+        assert len(state.units) == 0
+
+    def test_opposing_units_moving_to_same_cell_mutually_annihilate(self) -> None:
+        """When units from opposing teams move onto the same cell, they should destroy each other."""
+        state = GameState(units=[])
+        red_unit = Unit(Team.RED, Pos(5, 5), Pos(5, 5))
+        blue_unit = Unit(Team.BLUE, Pos(7, 5), Pos(7, 5))
+
+        # Make blue unit move toward red unit
+        blue_unit.plan.orders = [Move(target=Pos(5, 5))]
+        state.units = [red_unit, blue_unit]
+
+        # Execute one tick - blue moves one step closer
+        tick_game(state)
+
+        # Blue should have moved to (6, 5)
+        assert len(state.units) == 2
+        assert blue_unit.pos == Pos(6, 5)
+
+        # Execute another tick - blue moves to same cell as red
+        tick_game(state)
+
+        # Both units should be destroyed
+        assert len(state.units) == 0
+
+    def test_allied_units_on_same_cell_do_not_annihilate(self) -> None:
+        """When units from the same team occupy the same cell, they should not be destroyed."""
+        state = GameState(units=[])
+        red_unit1 = Unit(Team.RED, Pos(5, 5), Pos(5, 5))
+        red_unit2 = Unit(Team.RED, Pos(5, 5), Pos(5, 5))
+        state.units = [red_unit1, red_unit2]
+
+        tick_game(state)
+
+        # Both units should still exist
+        assert len(state.units) == 2
+
+    def test_multiple_opposing_units_on_same_cell_all_annihilate(self) -> None:
+        """When multiple units from different teams are on the same cell, all should be destroyed."""
+        state = GameState(units=[])
+        red_unit1 = Unit(Team.RED, Pos(5, 5), Pos(5, 5))
+        red_unit2 = Unit(Team.RED, Pos(5, 5), Pos(5, 5))
+        blue_unit1 = Unit(Team.BLUE, Pos(5, 5), Pos(5, 5))
+        blue_unit2 = Unit(Team.BLUE, Pos(5, 5), Pos(5, 5))
+        state.units = [red_unit1, red_unit2, blue_unit1, blue_unit2]
+
+        tick_game(state)
+
+        # All units should be destroyed
+        assert len(state.units) == 0
+
+    def test_annihilation_at_one_position_does_not_affect_units_elsewhere(self) -> None:
+        """Mutual annihilation at one position should not affect units at other positions."""
+        state = GameState(units=[])
+        # Units at (5, 5) that will annihilate
+        red_unit1 = Unit(Team.RED, Pos(5, 5), Pos(5, 5))
+        blue_unit1 = Unit(Team.BLUE, Pos(5, 5), Pos(5, 5))
+        # Units at other positions that should survive
+        red_unit2 = Unit(Team.RED, Pos(10, 10), Pos(10, 10))
+        blue_unit2 = Unit(Team.BLUE, Pos(15, 15), Pos(15, 15))
+        state.units = [red_unit1, blue_unit1, red_unit2, blue_unit2]
+
+        tick_game(state)
+
+        # Only the two units not at (5, 5) should remain
+        assert len(state.units) == 2
+        assert red_unit2 in state.units
+        assert blue_unit2 in state.units
+        assert red_unit1 not in state.units
+        assert blue_unit1 not in state.units

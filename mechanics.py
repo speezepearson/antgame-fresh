@@ -521,6 +521,25 @@ def tick_game(state: GameState) -> None:
         if current_order.is_complete(unit):
             unit.plan.complete_current_order()
 
+    # 3.5. Check for mutual annihilation (opposing units on same cell)
+    units_by_position: dict[Pos, list[Unit]] = {}
+    for unit in state.units:
+        if unit.pos not in units_by_position:
+            units_by_position[unit.pos] = []
+        units_by_position[unit.pos].append(unit)
+
+    # Remove units that share cells with enemies
+    units_to_remove: list[Unit] = []
+    for pos, units_at_pos in units_by_position.items():
+        if len(units_at_pos) > 1:
+            # Check if there are enemies at this position
+            teams_at_pos = {unit.team for unit in units_at_pos}
+            if len(teams_at_pos) > 1:
+                # Multiple teams at same position - mutual annihilation
+                units_to_remove.extend(units_at_pos)
+
+    state.units = [u for u in state.units if u not in units_to_remove]
+
     # 4. Sync units that are at base
     for unit in state.units:
         if unit.is_near_base(state):
