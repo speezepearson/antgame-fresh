@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "pygame>=2.6.1",
+    "noise>=1.2.2",
 ]
 
 [dependency-groups]
