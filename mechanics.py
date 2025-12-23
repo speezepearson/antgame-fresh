@@ -4,7 +4,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Protocol, TypeVar, Generic, Callable
+from typing import Protocol, TypeVar, Generic, Callable, Any
 import random
 
 from core import Timestamp, Pos, Region
@@ -152,15 +152,44 @@ class PositionReachedCondition:
 
 
 @dataclass
+class Action(Generic[T]):
+    """A named, inspectable action that generates orders based on input data.
+
+    The generic parameter T represents the type of data this action expects.
+    Actions are typically paired with Conditions that produce matching T values.
+    """
+
+    name: str
+    execute: Callable[[T], list[Order]]
+
+    def __str__(self) -> str:
+        return self.name
+
+
+@dataclass
 class Interrupt(Generic[T]):
     """An interrupt handler that can preempt a plan when a condition is met.
 
     When the condition evaluates to a non-None value, that value is passed
-    to the action callable to generate new orders.
+    to the action to generate new orders.
+
+    Design considerations:
+    - Generic[T] provides type-safe construction: mypy ensures the condition's
+      output type matches the action's input type at interrupt creation time.
+    - Remains fully inspectable at runtime: condition and action fields can be
+      examined separately for debugging, logging, and display purposes.
+    - Heterogeneous storage: A Plan can hold interrupts with different T values
+      (e.g., Interrupt[Pos], Interrupt[int], Interrupt[None]) by declaring
+      the list as list[Interrupt[Any]]. The generic T is erased at runtime.
+    - This design balances type safety (catching mismatched condition/action
+      pairs at construction) with flexibility (storing mixed interrupt types).
     """
 
     condition: Condition[T]
-    action: Callable[[T], list[Order]]
+    action: Action[T]
+
+    def __str__(self) -> str:
+        return f"when {self.condition}, do {self.action}"
 
 
 @dataclass
@@ -168,7 +197,7 @@ class Plan:
     """A plan consisting of a queue of orders and interrupt handlers."""
 
     orders: list[Order] = field(default_factory=list)
-    interrupts: list[Interrupt] = field(default_factory=list)
+    interrupts: list[Interrupt[Any]] = field(default_factory=list)
 
     def current_order(self) -> Order | None:
         """Get the current order (first in queue)."""
@@ -405,7 +434,7 @@ def tick_game(state: GameState) -> None:
             result = interrupt.condition.evaluate(unit, observations)
             if result is not None:
                 # First matching interrupt triggers: call action with result and replace order queue
-                new_orders = interrupt.action(result)
+                new_orders = interrupt.action.execute(result)
                 unit.plan.interrupt_with(new_orders)
                 break  # Only first matching interrupt per tick
 
