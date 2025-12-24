@@ -302,6 +302,7 @@ def draw_god_view(
         )
 
 
+CELL_BRIGHTNESS_HALFLIFE = 100
 def draw_player_view(
     surface: pygame.Surface,
     view: PlayerView,
@@ -318,20 +319,25 @@ def draw_player_view(
     map_pixel_width = view.knowledge.grid_width * TILE_SIZE
     map_pixel_height = view.knowledge.grid_height * TILE_SIZE
     bg_rect = pygame.Rect(offset_x, offset_y, map_pixel_width, map_pixel_height)
-    pygame.draw.rect(surface, (20, 20, 20), bg_rect)
+    pygame.draw.rect(surface, (0, 0, 0), bg_rect)
 
     # Get observations for this timestamp
     cur_observations = logbook.get(view_t, {})
 
-    # Draw visible tiles as slightly lighter
-    for pos in cur_observations.keys():
+    # Draw cells with gradient tinting based on observation age
+    for pos, (last_observed_tick, _) in view.knowledge.last_observations.items():
+        age = view_t - last_observed_tick
+        # Exponential decay: 80 * 2^-(age/50)
+        brightness = int(80 * (2 ** (-(age / CELL_BRIGHTNESS_HALFLIFE))))
+        brightness = max(0, min(80, brightness))  # Clamp to [0, 80]
+
         rect = pygame.Rect(
             offset_x + pos.x * TILE_SIZE,
             offset_y + pos.y * TILE_SIZE,
             TILE_SIZE,
             TILE_SIZE,
         )
-        pygame.draw.rect(surface, (40, 40, 40), rect)
+        pygame.draw.rect(surface, (brightness, brightness, brightness), rect)
 
     # Redraw grid on top
     draw_grid(
