@@ -47,6 +47,7 @@ TILE_SIZE = 16
 @dataclass
 class TickControls:
     """UI controls for time navigation."""
+
     slider: pygame_gui.elements.UIHorizontalSlider
     tick_label: pygame_gui.elements.UILabel
     live_btn: pygame_gui.elements.UIButton
@@ -55,6 +56,7 @@ class TickControls:
 @dataclass
 class PlanControls:
     """UI controls for plan editing."""
+
     text_box: pygame_gui.elements.UITextBox
     last_plan_html: str
     issue_plan_btn: pygame_gui.elements.UIButton
@@ -75,6 +77,7 @@ class PlayerView:
 @dataclass
 class GameContext:
     """Container for all game state and UI elements."""
+
     client: GameClient
     grid_width: int
     grid_height: int
@@ -265,8 +268,12 @@ def draw_god_view(
         # Client mode - no god view available
         # Draw a message indicating god view is not available
         font = pygame.font.Font(None, 24)
-        text = font.render("God view not available in client mode", True, (100, 100, 100))
-        text_rect = text.get_rect(center=(offset_x + map_pixel_width // 2, offset_y + map_pixel_height // 2))
+        text = font.render(
+            "God view not available in client mode", True, (100, 100, 100)
+        )
+        text_rect = text.get_rect(
+            center=(offset_x + map_pixel_width // 2, offset_y + map_pixel_height // 2)
+        )
         surface.blit(text, text_rect)
         return
 
@@ -537,6 +544,7 @@ def initialize_game() -> GameContext:
         # Client mode: create RemoteClient first, get dimensions from it
         client_team = Team[args.team]
         from client import RemoteClient
+
         temp_client = RemoteClient(url=args.url, team=client_team)
         # Fetch initial knowledge to get grid dimensions
         initial_knowledge = temp_client.get_player_knowledge(client_team, Timestamp(0))
@@ -592,12 +600,16 @@ def initialize_game() -> GameContext:
             manager=ui_manager,
         ),
         tick_label=pygame_gui.elements.UILabel(
-            relative_rect=pygame.Rect(red_offset_x + slider_width + 5, slider_y, 45, 20),
+            relative_rect=pygame.Rect(
+                red_offset_x + slider_width + 5, slider_y, 45, 20
+            ),
             text="t=0",
             manager=ui_manager,
         ),
         live_btn=pygame_gui.elements.UIButton(
-            relative_rect=pygame.Rect(red_offset_x + slider_width + 50, slider_y, 50, 20),
+            relative_rect=pygame.Rect(
+                red_offset_x + slider_width + 50, slider_y, 50, 20
+            ),
             text="LIVE",
             manager=ui_manager,
         ),
@@ -612,12 +624,16 @@ def initialize_game() -> GameContext:
             manager=ui_manager,
         ),
         tick_label=pygame_gui.elements.UILabel(
-            relative_rect=pygame.Rect(blue_offset_x + slider_width + 5, slider_y, 45, 20),
+            relative_rect=pygame.Rect(
+                blue_offset_x + slider_width + 5, slider_y, 45, 20
+            ),
             text="t=0",
             manager=ui_manager,
         ),
         live_btn=pygame_gui.elements.UIButton(
-            relative_rect=pygame.Rect(blue_offset_x + slider_width + 50, slider_y, 50, 20),
+            relative_rect=pygame.Rect(
+                blue_offset_x + slider_width + 50, slider_y, 50, 20
+            ),
             text="LIVE",
             manager=ui_manager,
         ),
@@ -698,6 +714,7 @@ def initialize_game() -> GameContext:
         # Start server if in server mode
         if args.mode == "server":
             from server import GameServer
+
             server = GameServer(state, knowledge_dict, port=args.port)
             server.start()
             print(f"Server started on port {args.port}")
@@ -753,7 +770,9 @@ def handle_events(ctx: GameContext) -> bool:
                             and view.working_plan.orders
                             and view.selected_unit_id is not None
                         ):
-                            ctx.client.set_unit_plan(team, view.selected_unit_id, view.working_plan)
+                            ctx.client.set_unit_plan(
+                                team, view.selected_unit_id, view.working_plan
+                            )
                             view.selected_unit_id = None
                             view.working_plan = None
                             # Clean up plan controls
@@ -825,9 +844,20 @@ def draw_ui(ctx: GameContext) -> None:
     draw_player_view(
         ctx.screen, ctx.views[Team.RED], Team.RED, ctx.red_offset_x, ctx.views_offset_y
     )
-    draw_god_view(ctx.screen, ctx.client.get_god_view(), ctx.god_offset_x, ctx.views_offset_y, ctx.grid_width, ctx.grid_height)
+    draw_god_view(
+        ctx.screen,
+        ctx.client.get_god_view(),
+        ctx.god_offset_x,
+        ctx.views_offset_y,
+        ctx.grid_width,
+        ctx.grid_height,
+    )
     draw_player_view(
-        ctx.screen, ctx.views[Team.BLUE], Team.BLUE, ctx.blue_offset_x, ctx.views_offset_y
+        ctx.screen,
+        ctx.views[Team.BLUE],
+        Team.BLUE,
+        ctx.blue_offset_x,
+        ctx.views_offset_y,
     )
 
     # Update slider positions and labels to reflect current state
@@ -839,7 +869,9 @@ def draw_ui(ctx: GameContext) -> None:
             red_view.tick_controls.slider.set_current_value(1.0)
             red_view.tick_controls.tick_label.set_text(f"t={current_tick}")
         else:
-            red_view.tick_controls.slider.set_current_value(red_view_tick / current_tick)
+            red_view.tick_controls.slider.set_current_value(
+                red_view_tick / current_tick
+            )
             red_view.tick_controls.tick_label.set_text(f"t={red_view_tick}")
 
         blue_view = ctx.views[Team.BLUE]
@@ -848,7 +880,9 @@ def draw_ui(ctx: GameContext) -> None:
             blue_view.tick_controls.slider.set_current_value(1.0)
             blue_view.tick_controls.tick_label.set_text(f"t={current_tick}")
         else:
-            blue_view.tick_controls.slider.set_current_value(blue_view_tick / current_tick)
+            blue_view.tick_controls.slider.set_current_value(
+                blue_view_tick / current_tick
+            )
             blue_view.tick_controls.tick_label.set_text(f"t={blue_view_tick}")
 
     # Plan area layout
@@ -864,7 +898,9 @@ def draw_ui(ctx: GameContext) -> None:
 
         if view.selected_unit_id is not None:
             # Get the selected unit from player knowledge
-            knowledge = ctx.client.get_player_knowledge(team, ctx.client.get_current_tick())
+            knowledge = ctx.client.get_player_knowledge(
+                team, ctx.client.get_current_tick()
+            )
             selected_unit = None
             if view.selected_unit_id in knowledge.last_seen:
                 _, selected_unit = knowledge.last_seen[view.selected_unit_id]
@@ -886,7 +922,9 @@ def draw_ui(ctx: GameContext) -> None:
             # Create plan controls if they don't exist
             if view.plan_controls is None:
                 selection_label = pygame_gui.elements.UILabel(
-                    relative_rect=pygame.Rect(plan_offset_x, selection_label_y, ctx.map_pixel_size, 20),
+                    relative_rect=pygame.Rect(
+                        plan_offset_x, selection_label_y, ctx.map_pixel_size, 20
+                    ),
                     text="",
                     manager=ctx.ui_manager,
                 )
@@ -977,7 +1015,9 @@ def main() -> None:
         elif isinstance(ctx.client, RemoteClient):
             current_time = pygame.time.get_ticks()
             if current_time - ctx.last_tick >= ctx.tick_interval:
-                ctx.views[ctx.client.team].knowledge = ctx.client.get_player_knowledge(ctx.client.team, ctx.client.get_current_tick()+1)
+                ctx.views[ctx.client.team].knowledge = ctx.client.get_player_knowledge(
+                    ctx.client.team, ctx.client.get_current_tick() + 1
+                )
                 ctx.last_tick = current_time
         else:
             raise ValueError(f"Unknown client type: {type(ctx.client)}")
@@ -990,4 +1030,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
