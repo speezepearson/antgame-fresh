@@ -4,7 +4,8 @@ import pytest
 import responses
 import threading
 import time
-from typing import Any, Generator, Iterator
+from typing import Any, AsyncIterator, Generator, Iterator
+from aiohttp.test_utils import TestClient, TestServer
 
 from core import Pos, Region, Timestamp
 from mechanics import (
@@ -396,8 +397,8 @@ def test_local_client_get_available_teams():
 
 
 @pytest.fixture
-def test_app():
-    """Create a test Flask app with game state."""
+async def test_app() -> AsyncIterator[tuple[Any, GameState, dict[Team, PlayerKnowledge]]]:
+    """Create a test aiohttp app with game state."""
     state = make_game(grid_width=16, grid_height=16)
     knowledge = {
         Team.RED: PlayerKnowledge(Team.RED, 16, 16, state.tick),
@@ -409,24 +410,21 @@ def test_app():
         knowledge[team].record_observations_from_bases(state)
 
     server = GameServer(state, knowledge, port=5000)
-    # Use Flask test client instead of starting actual server
-    app = server.app
-    app.config["TESTING"] = True
+    app = server._create_app()
 
-    yield app.test_client(), state, knowledge
-
-    # No cleanup needed - test client doesn't start threads
+    async with TestClient(TestServer(app)) as client:
+        yield client, state, knowledge
 
 
-def test_server_get_knowledge(test_app):
+async def test_server_get_knowledge(test_app):
     """Test server /knowledge endpoint."""
     client, state, knowledge = test_app
 
     # Request knowledge for RED team
-    response = client.get("/knowledge/RED")
-    assert response.status_code == 200
+    response = await client.get("/knowledge/RED")
+    assert response.status == 200
 
-    data = response.get_json()
+    data = await response.json()
     assert "knowledge" in data
     assert "base_region" in data
 
@@ -437,16 +435,16 @@ def test_server_get_knowledge(test_app):
     assert knowledge_data["grid_height"] == 16
 
 
-def test_server_get_knowledge_invalid_team(test_app):
+async def test_server_get_knowledge_invalid_team(test_app):
     """Test server /knowledge endpoint with invalid team."""
     client, state, knowledge = test_app
 
-    response = client.get("/knowledge/INVALID")
-    assert response.status_code == 400
-    assert "error" in response.get_json()
+    response = await client.get("/knowledge/INVALID")
+    assert response.status == 400
+    assert "error" in await response.json()
 
 
-def test_server_get_knowledge_with_tick(test_app):
+async def test_server_get_knowledge_with_tick(test_app):
     """Test server /knowledge endpoint with tick parameter."""
     client, state, knowledge = test_app
 
@@ -456,14 +454,14 @@ def test_server_get_knowledge_with_tick(test_app):
         k.tick_knowledge(state)
 
     # Request knowledge for tick 1
-    response = client.get("/knowledge/RED?tick=1")
-    assert response.status_code == 200
+    response = await client.get("/knowledge/RED?tick=1")
+    assert response.status == 200
 
-    data = response.get_json()
+    data = await response.json()
     assert data["knowledge"]["tick"] >= 1
 
 
-def test_server_get_knowledge_returns_immediately_for_past_tick(test_app):
+async def test_server_get_knowledge_returns_immediately_for_past_tick(test_app):
     """Test server returns immediately if knowledge already at requested tick."""
     client, state, knowledge = test_app
 
@@ -476,15 +474,15 @@ def test_server_get_knowledge_returns_immediately_for_past_tick(test_app):
 
     # Request tick 1 (should return immediately)
     start_time = time.time()
-    response = client.get("/knowledge/RED?tick=1")
+    response = await client.get("/knowledge/RED?tick=1")
     elapsed = time.time() - start_time
 
-    assert response.status_code == 200
+    assert response.status == 200
     assert elapsed < 0.5  # Should be nearly instant
-    assert response.get_json()["knowledge"]["tick"] >= 1
+    assert (await response.json())["knowledge"]["tick"] >= 1
 
 
-def test_server_set_unit_plan(test_app):
+async def test_server_set_unit_plan(test_app):
     """Test server /act endpoint."""
     client, state, knowledge = test_app
 
@@ -499,19 +497,19 @@ def test_server_set_unit_plan(test_app):
     }
 
     # Set the plan
-    response = client.post(
+    response = await client.post(
         f"/act/RED/{unit_id}",
         json=plan_data,
     )
-    assert response.status_code == 200
-    assert response.get_json()["success"] is True
+    assert response.status == 200
+    assert (await response.json())["success"] is True
 
     # Verify plan was set
     assert len(state.units[unit_id].plan.orders) == 1
     assert state.units[unit_id].plan.orders[0].target == Pos(10, 10)
 
 
-def test_server_set_unit_plan_invalid_team(test_app):
+async def test_server_set_unit_plan_invalid_team(test_app):
     """Test server /act endpoint with invalid team."""
     client, state, knowledge = test_app
 
@@ -520,28 +518,28 @@ def test_server_set_unit_plan_invalid_team(test_app):
         "interrupts": [],
     }
 
-    response = client.post(
+    response = await client.post(
         "/act/INVALID/1",
         json=plan_data,
     )
-    assert response.status_code == 400
-    assert "error" in response.get_json()
+    assert response.status == 400
+    assert "error" in await response.json()
 
 
-def test_server_set_unit_plan_invalid_data(test_app):
+async def test_server_set_unit_plan_invalid_data(test_app):
     """Test server /act endpoint with invalid plan data."""
     client, state, knowledge = test_app
 
     # Invalid plan data
-    response = client.post(
+    response = await client.post(
         "/act/RED/1",
         json={"invalid": "data"},
     )
-    assert response.status_code == 400
-    assert "error" in response.get_json()
+    assert response.status == 400
+    assert "error" in await response.json()
 
 
-def test_server_set_unit_plan_unit_not_in_base(test_app):
+async def test_server_set_unit_plan_unit_not_in_base(test_app):
     """Test server rejects plan for unit not in base."""
     client, state, knowledge = test_app
 
@@ -556,13 +554,13 @@ def test_server_set_unit_plan_unit_not_in_base(test_app):
         "interrupts": [],
     }
 
-    response = client.post(
+    response = await client.post(
         f"/act/RED/{red_unit.id}",
         json=plan_data,
     )
     # Should fail because unit is not in base
-    assert response.status_code == 400
-    assert "error" in response.get_json()
+    assert response.status == 400
+    assert "error" in await response.json()
 
 
 # ===== RemoteClient Tests (Integration - requires real server) =====

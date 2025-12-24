@@ -1,13 +1,12 @@
 """HTTP server for multiplayer game (server mode)."""
 
 from __future__ import annotations
+import asyncio
 import threading
-import time
-from flask import Flask, request, jsonify
-from typing import Callable, Any
+from aiohttp import web
+from typing import Any
 
-from core import Timestamp
-from mechanics import Team, UnitId, GameState, Plan
+from mechanics import Team, UnitId, GameState
 from knowledge import PlayerKnowledge
 from serialization import (
     serialize_player_knowledge,
@@ -30,111 +29,135 @@ class GameServer:
         self.knowledge = knowledge
         self.port = port
         self.ready_event = ready_event
-        self.app = Flask(__name__)
-        self._setup_routes()
         self.server_thread: threading.Thread | None = None
+        self._runner: web.AppRunner | None = None
+        self._loop: asyncio.AbstractEventLoop | None = None
 
-    def _setup_routes(self) -> None:
-        """Set up Flask routes."""
+    def _create_app(self) -> web.Application:
+        """Create and configure the aiohttp application."""
+        app = web.Application()
+        app.router.add_get("/knowledge/{team_name}", self._get_knowledge)
+        app.router.add_post("/act/{team_name}/{unit_id}", self._set_unit_plan)
 
-        @self.app.route("/knowledge/<team_name>", methods=["GET"])
-        def get_knowledge(team_name: str) -> Any:
-            """Get player knowledge for a team, waiting for a specific tick.
+        if self.ready_event is not None:
+            app.on_startup.append(self._on_startup)
 
-            Query params:
-                tick: Wait until knowledge.tick >= this value before returning
-            """
-            try:
-                team = Team[team_name]
-            except KeyError:
-                return jsonify({"error": f"Invalid team: {team_name}"}), 400
+        return app
 
-            # Get requested tick (default to current tick)
-            requested_tick = request.args.get("tick", type=int)
-            if requested_tick is None:
-                requested_tick = self.knowledge[team].tick
+    async def _on_startup(self, app: web.Application) -> None:
+        """Signal that the server is ready to accept connections."""
+        if self.ready_event is not None:
+            self.ready_event.set()
 
-            # Long-polling: wait until knowledge reaches requested tick
-            timeout = 30  # seconds
-            start_time = time.time()
-            while time.time() - start_time < timeout:
-                current_tick = self.knowledge[team].tick
-                if current_tick >= requested_tick:
-                    # Knowledge is ready
-                    return jsonify(
-                        {
-                            "knowledge": serialize_player_knowledge(
-                                self.knowledge[team]
-                            ),
-                            "base_region": serialize_region(
-                                self.state.base_regions[team]
-                            ),
-                        }
-                    )
+    async def _get_knowledge(self, request: web.Request) -> web.Response:
+        """Get player knowledge for a team, waiting for a specific tick.
 
-                time.sleep(0.05)
-
-            # Timeout - return current knowledge anyway
-            return jsonify(
-                {
-                    "knowledge": serialize_player_knowledge(self.knowledge[team]),
-                    "base_region": serialize_region(self.state.base_regions[team]),
-                }
+        Query params:
+            tick: Wait until knowledge.tick >= this value before returning
+        """
+        team_name = request.match_info["team_name"]
+        try:
+            team = Team[team_name]
+        except KeyError:
+            return web.json_response(
+                {"error": f"Invalid team: {team_name}"}, status=400
             )
 
-        @self.app.route("/act/<team_name>/<int:unit_id>", methods=["POST"])
-        def set_unit_plan(team_name: str, unit_id: int) -> Any:
-            """Set a unit's plan.
+        # Get requested tick (default to current tick)
+        tick_str = request.query.get("tick")
+        if tick_str is not None:
+            requested_tick = int(tick_str)
+        else:
+            requested_tick = self.knowledge[team].tick
 
-            Body: JSON-serialized Plan
-            """
-            try:
-                team = Team[team_name]
-            except KeyError:
-                return jsonify({"error": f"Invalid team: {team_name}"}), 400
+        # Long-polling: wait until knowledge reaches requested tick
+        timeout = 30  # seconds
+        elapsed = 0.0
+        while elapsed < timeout:
+            current_tick = self.knowledge[team].tick
+            if current_tick >= requested_tick:
+                # Knowledge is ready
+                return web.json_response(
+                    {
+                        "knowledge": serialize_player_knowledge(self.knowledge[team]),
+                        "base_region": serialize_region(self.state.base_regions[team]),
+                    }
+                )
 
-            try:
-                plan_data = request.get_json()
-                plan = deserialize_plan(plan_data)
-            except Exception as e:
-                return jsonify({"error": f"Invalid plan data: {e}"}), 400
+            await asyncio.sleep(0.05)
+            elapsed += 0.05
 
-            try:
-                self.state.set_unit_plan(UnitId(unit_id), plan)
-                return jsonify({"success": True})
-            except Exception as e:
-                return jsonify({"error": f"Failed to set plan: {e}"}), 400
+        # Timeout - return current knowledge anyway
+        return web.json_response(
+            {
+                "knowledge": serialize_player_knowledge(self.knowledge[team]),
+                "base_region": serialize_region(self.state.base_regions[team]),
+            }
+        )
+
+    async def _set_unit_plan(self, request: web.Request) -> web.Response:
+        """Set a unit's plan.
+
+        Body: JSON-serialized Plan
+        """
+        team_name = request.match_info["team_name"]
+        unit_id_str = request.match_info["unit_id"]
+
+        try:
+            team = Team[team_name]
+        except KeyError:
+            return web.json_response(
+                {"error": f"Invalid team: {team_name}"}, status=400
+            )
+
+        try:
+            plan_data = await request.json()
+            plan = deserialize_plan(plan_data)
+        except Exception as e:
+            return web.json_response({"error": f"Invalid plan data: {e}"}, status=400)
+
+        try:
+            self.state.set_unit_plan(UnitId(int(unit_id_str)), plan)
+            return web.json_response({"success": True})
+        except Exception as e:
+            return web.json_response({"error": f"Failed to set plan: {e}"}, status=400)
 
     def start(self) -> None:
         """Start the server in a background thread."""
-        from werkzeug.serving import make_server
-
         if self.server_thread is not None:
             raise RuntimeError("Server already started")
 
-        # Disable Flask's default logging for cleaner output
-        import logging
-
-        log = logging.getLogger("werkzeug")
-        log.setLevel(logging.ERROR)
-
-        # Create server (binds socket immediately)
-        server = make_server("0.0.0.0", self.port, self.app, threaded=True)
-        ready_event = self.ready_event
-
         def run_server() -> None:
-            # Signal readiness from within the thread, just before serve_forever()
-            if ready_event is not None:
-                ready_event.set()
-            server.serve_forever()
+            self._loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self._loop)
+
+            app = self._create_app()
+            self._runner = web.AppRunner(app)
+
+            async def start_server() -> None:
+                assert self._runner is not None
+                await self._runner.setup()
+                site = web.TCPSite(self._runner, "0.0.0.0", self.port)
+                await site.start()
+
+            self._loop.run_until_complete(start_server())
+            self._loop.run_forever()
 
         self.server_thread = threading.Thread(target=run_server, daemon=True)
         self.server_thread.start()
 
+        # Wait for server to be ready before returning
+        if self.ready_event is not None:
+            self.ready_event.wait()
+
         print(f"Server started on port {self.port}")
 
     def stop(self) -> None:
-        """Stop the server (note: Flask doesn't support graceful shutdown easily)."""
-        # In a production app, we'd use a proper WSGI server with shutdown support
-        # For now, the daemon thread will be killed when the main program exits
-        pass
+        """Stop the server."""
+        if self._loop is not None:
+
+            async def cleanup() -> None:
+                if self._runner is not None:
+                    await self._runner.cleanup()
+
+            self._loop.call_soon_threadsafe(self._loop.stop)
