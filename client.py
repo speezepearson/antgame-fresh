@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional, Any
-import json
-import requests
-import time
+import asyncio
+import aiohttp
 
 from core import Pos, Region, Timestamp
 from mechanics import Team, GameState, Plan, UnitId
@@ -21,12 +20,12 @@ class GameClient(ABC):
     """
 
     @abstractmethod
-    def get_player_knowledge(self, team: Team, tick: Timestamp) -> PlayerKnowledge:
+    async def get_player_knowledge(self, team: Team, tick: Timestamp) -> PlayerKnowledge:
         """Wait until at least the given time, then get the current knowledge for a team."""
         pass
 
     @abstractmethod
-    def set_unit_plan(self, team: Team, unit_id: UnitId, plan: Plan) -> None:
+    async def set_unit_plan(self, team: Team, unit_id: UnitId, plan: Plan) -> None:
         """Set a unit's plan (if it's in that team's base)."""
         pass
 
@@ -64,12 +63,12 @@ class LocalClient(GameClient):
     state: GameState
     knowledge: dict[Team, PlayerKnowledge]
 
-    def get_player_knowledge(self, team: Team, tick: Timestamp) -> PlayerKnowledge:
+    async def get_player_knowledge(self, team: Team, tick: Timestamp) -> PlayerKnowledge:
         while self.state.tick < tick:
-            time.sleep(0.03)
+            await asyncio.sleep(0.03)
         return self.knowledge[team]
 
-    def set_unit_plan(self, team: Team, unit_id: UnitId, plan: Plan) -> None:
+    async def set_unit_plan(self, team: Team, unit_id: UnitId, plan: Plan) -> None:
         # LocalClient has direct access, so just call the method
         self.state.set_unit_plan(unit_id, plan)
 
@@ -92,24 +91,35 @@ class RemoteClient(GameClient):
 
     url: str
     team: Team
-    _current_knowledge: Optional[PlayerKnowledge] = None
-    _base_region: Optional[Region] = None
-    _last_tick: Timestamp = Timestamp(0)
+    _current_knowledge: Optional[PlayerKnowledge] = field(default=None, init=False)
+    _base_region: Optional[Region] = field(default=None, init=False)
+    _last_tick: Timestamp = field(default_factory=lambda: Timestamp(0), init=False)
+    _session: Optional[aiohttp.ClientSession] = field(default=None, init=False)
 
-    def __post_init__(self) -> None:
-        """Initialize by fetching initial state."""
-        self._fetch_knowledge(tick=Timestamp(0))
+    async def initialize(self) -> None:
+        """Initialize by creating session and fetching initial state."""
+        self._session = aiohttp.ClientSession()
+        await self._fetch_knowledge(tick=Timestamp(0))
 
-    def _fetch_knowledge(self, tick: Timestamp) -> None:
+    async def close(self) -> None:
+        """Close the HTTP session."""
+        if self._session is not None:
+            await self._session.close()
+            self._session = None
+
+    async def _fetch_knowledge(self, tick: Timestamp) -> None:
         """Fetch knowledge from server, waiting for next tick if needed."""
-        # Wait for tick > last_tick
+        if self._session is None:
+            raise RuntimeError("Client not initialized - call initialize() first")
+
         print("fetching knowledge", self.team.name, tick)
-        response = requests.get(
-            f"{self.url}/knowledge/{self.team.name}", params={"tick": tick}, timeout=30
-        )
-        # print('response', response.status_code, response.text)
-        response.raise_for_status()
-        data = response.json()
+        async with self._session.get(
+            f"{self.url}/knowledge/{self.team.name}",
+            params={"tick": str(tick)},
+            timeout=aiohttp.ClientTimeout(total=30),
+        ) as response:
+            response.raise_for_status()
+            data = await response.json()
 
         # Deserialize knowledge
         from serialization import deserialize_player_knowledge
@@ -126,33 +136,36 @@ class RemoteClient(GameClient):
             self._last_tick,
         )
 
-    def get_player_knowledge(self, team: Team, tick: Timestamp) -> PlayerKnowledge:
+    async def get_player_knowledge(self, team: Team, tick: Timestamp) -> PlayerKnowledge:
         if team != self.team:
             raise ValueError(f"Can only view own team ({self.team}) in remote mode")
 
         if tick <= self._last_tick and self._current_knowledge is not None:
             return self._current_knowledge
 
-        self._fetch_knowledge(tick=tick)
+        await self._fetch_knowledge(tick=tick)
 
         if self._current_knowledge is None:
             raise RuntimeError("Failed to fetch knowledge from server")
 
         return self._current_knowledge
 
-    def set_unit_plan(self, team: Team, unit_id: UnitId, plan: Plan) -> None:
+    async def set_unit_plan(self, team: Team, unit_id: UnitId, plan: Plan) -> None:
         if team != self.team:
             raise ValueError(f"Can only control own team ({self.team}) in remote mode")
+
+        if self._session is None:
+            raise RuntimeError("Client not initialized - call initialize() first")
 
         from serialization import serialize_plan
 
         try:
-            response = requests.post(
+            async with self._session.post(
                 f"{self.url}/act/{team.name}/{unit_id}",
                 json=serialize_plan(plan),
-                timeout=5,
-            )
-            response.raise_for_status()
+                timeout=aiohttp.ClientTimeout(total=5),
+            ) as response:
+                response.raise_for_status()
         except Exception as e:
             print(f"Error setting unit plan: {e}")
             raise

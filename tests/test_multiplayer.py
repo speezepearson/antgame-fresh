@@ -1,10 +1,8 @@
 """Tests for multiplayer functionality: serialization, server, and client."""
 
+import asyncio
 import pytest
-import responses
-import threading
-import time
-from typing import Any, AsyncIterator, Generator, Iterator
+from typing import Any, AsyncIterator
 from aiohttp.test_utils import TestClient, TestServer
 
 from core import Pos, Region, Timestamp
@@ -306,14 +304,14 @@ class TestLocalClient:
         }
         return LocalClient(state=state, knowledge=knowledge), state, knowledge
 
-    def test_returns_player_knowledge_for_team(self):
+    async def test_returns_player_knowledge_for_team(self):
         """Test LocalClient returns correct player knowledge."""
         client, state, knowledge = self._make_client()
 
-        assert client.get_player_knowledge(Team.RED, tick=state.tick) == knowledge[Team.RED]
-        assert client.get_player_knowledge(Team.BLUE, tick=state.tick) == knowledge[Team.BLUE]
+        assert await client.get_player_knowledge(Team.RED, tick=state.tick) == knowledge[Team.RED]
+        assert await client.get_player_knowledge(Team.BLUE, tick=state.tick) == knowledge[Team.BLUE]
 
-    def test_sets_unit_plan(self):
+    async def test_sets_unit_plan(self):
         """Test LocalClient can set unit plans."""
         client, state, knowledge = self._make_client()
 
@@ -323,7 +321,7 @@ class TestLocalClient:
 
         # Set a plan
         new_plan = Plan(orders=[Move(target=Pos(10, 10))])
-        client.set_unit_plan(Team.RED, unit_id, new_plan)
+        await client.set_unit_plan(Team.RED, unit_id, new_plan)
 
         # Verify plan was set
         assert len(state.units[unit_id].plan.orders) == 1
@@ -442,6 +440,7 @@ class TestGameServer:
             k.tick_knowledge(state)
             k.tick_knowledge(state)
 
+        import time
         start_time = time.time()
         response = await client.get("/knowledge/RED?tick=1")
         elapsed = time.time() - start_time
@@ -526,7 +525,7 @@ RunningServerFixture = tuple[GameServer, GameState, dict[Team, PlayerKnowledge],
 
 
 @pytest.fixture
-def running_server() -> Iterator[RunningServerFixture]:
+async def running_server() -> AsyncIterator[RunningServerFixture]:
     """Create and start a real server for integration tests."""
     import random
 
@@ -543,138 +542,171 @@ def running_server() -> Iterator[RunningServerFixture]:
     for team in [Team.RED, Team.BLUE]:
         knowledge[team].record_observations_from_bases(state)
 
-    ready_event = threading.Event()
+    ready_event = asyncio.Event()
     server = GameServer(state, knowledge, port=port, ready_event=ready_event)
-    server.start()
-    ready_event.wait(timeout=5.0)
+    await server.start()
+    await asyncio.wait_for(ready_event.wait(), timeout=5.0)
 
     yield server, state, knowledge, port
 
     # Cleanup
-    server.stop()
+    await server.stop()
 
 @pytest.mark.integration
 class TestRemoteClient:
     """Integration tests for RemoteClient (requires real server)."""
 
-    def test_initializes_and_fetches_knowledge(self, running_server: RunningServerFixture) -> None:
+    async def test_initializes_and_fetches_knowledge(self, running_server: RunningServerFixture) -> None:
         """Test RemoteClient can initialize and fetch initial knowledge."""
         server, state, knowledge, port = running_server
 
         client = RemoteClient(url=f"http://localhost:{port}", team=Team.RED)
+        await client.initialize()
+        try:
+            assert client._current_knowledge is not None
+            assert client._current_knowledge.team == Team.RED
+            assert client._current_knowledge.grid_width == 16
+            assert client._current_knowledge.grid_height == 16
+            assert client._base_region is not None
+        finally:
+            await client.close()
 
-        assert client._current_knowledge is not None
-        assert client._current_knowledge.team == Team.RED
-        assert client._current_knowledge.grid_width == 16
-        assert client._current_knowledge.grid_height == 16
-        assert client._base_region is not None
-
-    def test_fetches_player_knowledge_for_own_team(self, running_server: RunningServerFixture) -> None:
+    async def test_fetches_player_knowledge_for_own_team(self, running_server: RunningServerFixture) -> None:
         """Test RemoteClient can fetch player knowledge for own team."""
         server, state, knowledge, port = running_server
 
         client = RemoteClient(url=f"http://localhost:{port}", team=Team.RED)
+        await client.initialize()
+        try:
+            k = await client.get_player_knowledge(Team.RED, tick=state.tick)
+            assert k.team == Team.RED
+            assert k.grid_width == 16
+            assert k.grid_height == 16
+        finally:
+            await client.close()
 
-        k = client.get_player_knowledge(Team.RED, tick=state.tick)
-        assert k.team == Team.RED
-        assert k.grid_width == 16
-        assert k.grid_height == 16
-
-    def test_rejects_knowledge_request_for_other_team(self, running_server: RunningServerFixture) -> None:
+    async def test_rejects_knowledge_request_for_other_team(self, running_server: RunningServerFixture) -> None:
         """Test RemoteClient rejects knowledge requests for other team."""
         server, state, knowledge, port = running_server
 
         client = RemoteClient(url=f"http://localhost:{port}", team=Team.RED)
+        await client.initialize()
+        try:
+            with pytest.raises(ValueError, match="Can only view own team"):
+                await client.get_player_knowledge(Team.BLUE, tick=state.tick)
+        finally:
+            await client.close()
 
-        with pytest.raises(ValueError, match="Can only view own team"):
-            client.get_player_knowledge(Team.BLUE, tick=state.tick)
-
-    def test_sets_unit_plan(self, running_server: RunningServerFixture) -> None:
+    async def test_sets_unit_plan(self, running_server: RunningServerFixture) -> None:
         """Test RemoteClient can set unit plans."""
         server, state, knowledge, port = running_server
 
         client = RemoteClient(url=f"http://localhost:{port}", team=Team.RED)
+        await client.initialize()
+        try:
+            red_units = [u for u in state.units.values() if u.team == Team.RED]
+            unit_id = red_units[0].id
 
-        red_units = [u for u in state.units.values() if u.team == Team.RED]
-        unit_id = red_units[0].id
+            new_plan = Plan(orders=[Move(target=Pos(12, 12))])
+            await client.set_unit_plan(Team.RED, unit_id, new_plan)
 
-        new_plan = Plan(orders=[Move(target=Pos(12, 12))])
-        client.set_unit_plan(Team.RED, unit_id, new_plan)
+            assert len(state.units[unit_id].plan.orders) == 1
+            assert state.units[unit_id].plan.orders[0] == Move(Pos(12, 12))
+        finally:
+            await client.close()
 
-        assert len(state.units[unit_id].plan.orders) == 1
-        assert state.units[unit_id].plan.orders[0] == Move(Pos(12, 12))
-
-    def test_rejects_plan_for_other_team(self, running_server: RunningServerFixture) -> None:
+    async def test_rejects_plan_for_other_team(self, running_server: RunningServerFixture) -> None:
         """Test RemoteClient cannot set plans for other team."""
         server, state, knowledge, port = running_server
 
         client = RemoteClient(url=f"http://localhost:{port}", team=Team.RED)
+        await client.initialize()
+        try:
+            new_plan = Plan(orders=[Move(target=Pos(12, 12))])
 
-        new_plan = Plan(orders=[Move(target=Pos(12, 12))])
+            with pytest.raises(ValueError, match="Can only control own team"):
+                await client.set_unit_plan(Team.BLUE, UnitId(1), new_plan)
+        finally:
+            await client.close()
 
-        with pytest.raises(ValueError, match="Can only control own team"):
-            client.set_unit_plan(Team.BLUE, UnitId(1), new_plan)
-
-    def test_gets_base_region_for_own_team(self, running_server: RunningServerFixture) -> None:
+    async def test_gets_base_region_for_own_team(self, running_server: RunningServerFixture) -> None:
         """Test RemoteClient can get base region."""
         server, state, knowledge, port = running_server
 
         client = RemoteClient(url=f"http://localhost:{port}", team=Team.RED)
+        await client.initialize()
+        try:
+            region = client.get_base_region(Team.RED)
+            assert region is not None
+            assert len(region.cells) > 0
+        finally:
+            await client.close()
 
-        region = client.get_base_region(Team.RED)
-        assert region is not None
-        assert len(region.cells) > 0
-
-    def test_rejects_base_region_for_other_team(self, running_server: RunningServerFixture) -> None:
+    async def test_rejects_base_region_for_other_team(self, running_server: RunningServerFixture) -> None:
         """Test RemoteClient rejects base region request for other team."""
         server, state, knowledge, port = running_server
 
         client = RemoteClient(url=f"http://localhost:{port}", team=Team.RED)
+        await client.initialize()
+        try:
+            with pytest.raises(ValueError, match="Can only view own team"):
+                client.get_base_region(Team.BLUE)
+        finally:
+            await client.close()
 
-        with pytest.raises(ValueError, match="Can only view own team"):
-            client.get_base_region(Team.BLUE)
-
-    def test_returns_current_tick(self, running_server: RunningServerFixture) -> None:
+    async def test_returns_current_tick(self, running_server: RunningServerFixture) -> None:
         """Test RemoteClient can get current tick."""
         server, state, knowledge, port = running_server
 
         client = RemoteClient(url=f"http://localhost:{port}", team=Team.RED)
+        await client.initialize()
+        try:
+            tick = client.get_current_tick()
+            assert tick >= 0
+        finally:
+            await client.close()
 
-        tick = client.get_current_tick()
-        assert tick >= 0
-
-    def test_god_view_not_available(self, running_server: RunningServerFixture) -> None:
+    async def test_god_view_not_available(self, running_server: RunningServerFixture) -> None:
         """Test RemoteClient cannot get god view."""
         server, state, knowledge, port = running_server
 
         client = RemoteClient(url=f"http://localhost:{port}", team=Team.RED)
+        await client.initialize()
+        try:
+            assert client.get_god_view() is None
+        finally:
+            await client.close()
 
-        assert client.get_god_view() is None
-
-    def test_only_returns_own_team_as_available(self, running_server: RunningServerFixture) -> None:
+    async def test_only_returns_own_team_as_available(self, running_server: RunningServerFixture) -> None:
         """Test RemoteClient only returns own team."""
         server, state, knowledge, port = running_server
 
         client = RemoteClient(url=f"http://localhost:{port}", team=Team.RED)
+        await client.initialize()
+        try:
+            teams = client.get_available_teams()
+            assert teams == [Team.RED]
+        finally:
+            await client.close()
 
-        teams = client.get_available_teams()
-        assert teams == [Team.RED]
-
-    def test_knowledge_updates_when_game_advances(self, running_server: RunningServerFixture) -> None:
+    async def test_knowledge_updates_when_game_advances(self, running_server: RunningServerFixture) -> None:
         """Test RemoteClient can fetch updated knowledge."""
         server, state, knowledge, port = running_server
 
         client = RemoteClient(url=f"http://localhost:{port}", team=Team.RED)
+        await client.initialize()
+        try:
+            initial_tick = client.get_current_tick()
 
-        initial_tick = client.get_current_tick()
+            # Advance game on server
+            tick_game(state)
+            for k in knowledge.values():
+                k.tick_knowledge(state)
 
-        # Advance game on server
-        tick_game(state)
-        for k in knowledge.values():
-            k.tick_knowledge(state)
-
-        updated_knowledge = client.get_player_knowledge(Team.RED, state.tick)
-        assert updated_knowledge.tick > initial_tick
+            updated_knowledge = await client.get_player_knowledge(Team.RED, state.tick)
+            assert updated_knowledge.tick > initial_tick
+        finally:
+            await client.close()
 
 
 # ===== Integration Tests =====
@@ -684,57 +716,75 @@ class TestRemoteClient:
 class TestClientServerIntegration:
     """Full integration tests for client-server interaction."""
 
-    def test_both_teams_can_connect_and_interact(self, running_server: RunningServerFixture) -> None:
+    async def test_both_teams_can_connect_and_interact(self, running_server: RunningServerFixture) -> None:
         """Test full client-server interaction with both teams."""
         server, state, knowledge, port = running_server
 
         # Create clients for both teams
         red_client = RemoteClient(url=f"http://localhost:{port}", team=Team.RED)
         blue_client = RemoteClient(url=f"http://localhost:{port}", team=Team.BLUE)
+        await red_client.initialize()
+        await blue_client.initialize()
 
-        # Get initial knowledge
-        red_knowledge = red_client.get_player_knowledge(Team.RED, tick=state.tick)
-        blue_knowledge = blue_client.get_player_knowledge(Team.BLUE, tick=state.tick)
+        try:
+            # Get initial knowledge
+            red_knowledge = await red_client.get_player_knowledge(Team.RED, tick=state.tick)
+            blue_knowledge = await blue_client.get_player_knowledge(Team.BLUE, tick=state.tick)
 
-        assert red_knowledge.team == Team.RED
-        assert blue_knowledge.team == Team.BLUE
+            assert red_knowledge.team == Team.RED
+            assert blue_knowledge.team == Team.BLUE
+        finally:
+            await red_client.close()
+            await blue_client.close()
 
-    def test_both_teams_can_set_unit_plans(self, running_server: RunningServerFixture) -> None:
+    async def test_both_teams_can_set_unit_plans(self, running_server: RunningServerFixture) -> None:
         """Test both teams can set plans for their units."""
         server, state, knowledge, port = running_server
 
         red_client = RemoteClient(url=f"http://localhost:{port}", team=Team.RED)
         blue_client = RemoteClient(url=f"http://localhost:{port}", team=Team.BLUE)
+        await red_client.initialize()
+        await blue_client.initialize()
 
-        red_unit = next(u for u in state.units.values() if u.team == Team.RED)
-        blue_unit = next(u for u in state.units.values() if u.team == Team.BLUE)
+        try:
+            red_unit = next(u for u in state.units.values() if u.team == Team.RED)
+            blue_unit = next(u for u in state.units.values() if u.team == Team.BLUE)
 
-        red_client.set_unit_plan(Team.RED, red_unit.id, Plan(orders=[Move(target=Pos(8, 8))]))
-        blue_client.set_unit_plan(
-            Team.BLUE, blue_unit.id, Plan(orders=[Move(target=Pos(9, 9))])
-        )
+            await red_client.set_unit_plan(Team.RED, red_unit.id, Plan(orders=[Move(target=Pos(8, 8))]))
+            await blue_client.set_unit_plan(
+                Team.BLUE, blue_unit.id, Plan(orders=[Move(target=Pos(9, 9))])
+            )
 
-        assert state.units[red_unit.id].plan.orders[0] == Move(Pos(8, 8))
-        assert state.units[blue_unit.id].plan.orders[0] == Move(Pos(9, 9))
+            assert state.units[red_unit.id].plan.orders[0] == Move(Pos(8, 8))
+            assert state.units[blue_unit.id].plan.orders[0] == Move(Pos(9, 9))
+        finally:
+            await red_client.close()
+            await blue_client.close()
 
-    def test_clients_receive_updated_knowledge_after_game_advances(self, running_server: RunningServerFixture) -> None:
+    async def test_clients_receive_updated_knowledge_after_game_advances(self, running_server: RunningServerFixture) -> None:
         """Test clients receive updated knowledge when game advances."""
         server, state, knowledge, port = running_server
 
         red_client = RemoteClient(url=f"http://localhost:{port}", team=Team.RED)
         blue_client = RemoteClient(url=f"http://localhost:{port}", team=Team.BLUE)
+        await red_client.initialize()
+        await blue_client.initialize()
 
-        red_knowledge = red_client.get_player_knowledge(Team.RED, tick=state.tick)
-        blue_knowledge = blue_client.get_player_knowledge(Team.BLUE, tick=state.tick)
+        try:
+            red_knowledge = await red_client.get_player_knowledge(Team.RED, tick=state.tick)
+            blue_knowledge = await blue_client.get_player_knowledge(Team.BLUE, tick=state.tick)
 
-        # Advance game
-        tick_game(state)
-        for k in knowledge.values():
-            k.tick_knowledge(state)
+            # Advance game
+            tick_game(state)
+            for k in knowledge.values():
+                k.tick_knowledge(state)
 
-        # Fetch updated knowledge
-        updated_red = red_client.get_player_knowledge(Team.RED, tick=state.tick)
-        updated_blue = blue_client.get_player_knowledge(Team.BLUE, tick=state.tick)
+            # Fetch updated knowledge
+            updated_red = await red_client.get_player_knowledge(Team.RED, tick=state.tick)
+            updated_blue = await blue_client.get_player_knowledge(Team.BLUE, tick=state.tick)
 
-        assert updated_red.tick > red_knowledge.tick
-        assert updated_blue.tick > blue_knowledge.tick
+            assert updated_red.tick > red_knowledge.tick
+            assert updated_blue.tick > blue_knowledge.tick
+        finally:
+            await red_client.close()
+            await blue_client.close()

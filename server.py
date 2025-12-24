@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 import asyncio
-import threading
 from aiohttp import web
 from typing import Any
 
@@ -23,15 +22,14 @@ class GameServer:
         state: GameState,
         knowledge: dict[Team, PlayerKnowledge],
         port: int = 5000,
-        ready_event: threading.Event | None = None,
+        ready_event: asyncio.Event | None = None,
     ):
         self.state = state
         self.knowledge = knowledge
         self.port = port
         self.ready_event = ready_event
-        self.server_thread: threading.Thread | None = None
         self._runner: web.AppRunner | None = None
-        self._loop: asyncio.AbstractEventLoop | None = None
+        self._site: web.TCPSite | None = None
 
     def _create_app(self) -> web.Application:
         """Create and configure the aiohttp application."""
@@ -122,42 +120,22 @@ class GameServer:
         except Exception as e:
             return web.json_response({"error": f"Failed to set plan: {e}"}, status=400)
 
-    def start(self) -> None:
-        """Start the server in a background thread."""
-        if self.server_thread is not None:
+    async def start(self) -> None:
+        """Start the server."""
+        if self._runner is not None:
             raise RuntimeError("Server already started")
 
-        def run_server() -> None:
-            self._loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(self._loop)
-
-            app = self._create_app()
-            self._runner = web.AppRunner(app)
-
-            async def start_server() -> None:
-                assert self._runner is not None
-                await self._runner.setup()
-                site = web.TCPSite(self._runner, "0.0.0.0", self.port)
-                await site.start()
-
-            self._loop.run_until_complete(start_server())
-            self._loop.run_forever()
-
-        self.server_thread = threading.Thread(target=run_server, daemon=True)
-        self.server_thread.start()
-
-        # Wait for server to be ready before returning
-        if self.ready_event is not None:
-            self.ready_event.wait()
+        app = self._create_app()
+        self._runner = web.AppRunner(app)
+        await self._runner.setup()
+        self._site = web.TCPSite(self._runner, "0.0.0.0", self.port)
+        await self._site.start()
 
         print(f"Server started on port {self.port}")
 
-    def stop(self) -> None:
+    async def stop(self) -> None:
         """Stop the server."""
-        if self._loop is not None:
-
-            async def cleanup() -> None:
-                if self._runner is not None:
-                    await self._runner.cleanup()
-
-            self._loop.call_soon_threadsafe(self._loop.stop)
+        if self._runner is not None:
+            await self._runner.cleanup()
+            self._runner = None
+            self._site = None

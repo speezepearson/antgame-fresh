@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 from dataclasses import dataclass, field
+import asyncio
 import random
-from typing import Any
+from typing import Any, Optional
 import argparse
 import numpy
 import pygame
@@ -38,6 +39,7 @@ from mechanics import (
     PositionReachedCondition,
     FoodConfig,
 )
+from server import GameServer
 
 
 # Rendering Constants
@@ -94,6 +96,8 @@ class GameContext:
     map_pixel_size: int
     tick_interval: int
     last_tick: int
+    server: Optional[GameServer] = None
+    pending_plan_issue: Optional[tuple[Team, UnitId, Plan]] = None
 
 
 def format_plan(plan: Plan, unit: Unit) -> list[str]:
@@ -439,11 +443,13 @@ def screen_to_grid(
     return None
 
 
-def find_unit_at_base(client: GameClient, pos: Pos, team: Team) -> Unit | None:
-    """Find a unit of the given team at pos, only if inside their base region."""
-    base_region = client.get_base_region(team)
-    knowledge = client.get_player_knowledge(team, client.get_current_tick())
+def find_unit_at_base_sync(
+    knowledge: PlayerKnowledge, base_region: Region, pos: Pos, team: Team
+) -> Unit | None:
+    """Find a unit of the given team at pos, only if inside their base region.
 
+    Uses pre-fetched knowledge and base_region to avoid async calls.
+    """
     # Check units we know about from our observations
     for unit_id, (timestamp, unit) in knowledge.last_seen.items():
         if unit.team == team and unit.pos == pos:
@@ -466,7 +472,7 @@ def make_default_interrupts() -> list[Interrupt[Any]]:
     ]
 
 
-def initialize_game() -> GameContext:
+async def initialize_game() -> GameContext:
     """Parse arguments and initialize game state, pygame, and UI elements."""
     # Parse command-line arguments
     parser = argparse.ArgumentParser(description="Ant RTS Game")
@@ -540,14 +546,17 @@ def initialize_game() -> GameContext:
     plan_area_height = 240  # Space for plan display and buttons below player maps
 
     # Create the game state and client based on mode
+    server: Optional[GameServer] = None
     if args.mode == "client":
         # Client mode: create RemoteClient first, get dimensions from it
         client_team = Team[args.team]
-        from client import RemoteClient
 
         temp_client = RemoteClient(url=args.url, team=client_team)
+        await temp_client.initialize()
         # Fetch initial knowledge to get grid dimensions
-        initial_knowledge = temp_client.get_player_knowledge(client_team, Timestamp(0))
+        initial_knowledge = await temp_client.get_player_knowledge(
+            client_team, Timestamp(0)
+        )
         grid_width = initial_knowledge.grid_width
         grid_height = initial_knowledge.grid_height
         state = None  # No local state in client mode
@@ -713,11 +722,8 @@ def initialize_game() -> GameContext:
 
         # Start server if in server mode
         if args.mode == "server":
-            from server import GameServer
-
             server = GameServer(state, knowledge_dict, port=args.port)
-            server.start()
-            print(f"Server started on port {args.port}")
+            await server.start()
 
     views = {
         Team.RED: red_view,
@@ -741,11 +747,16 @@ def initialize_game() -> GameContext:
         map_pixel_size=map_pixel_size,
         tick_interval=tick_interval,
         last_tick=last_tick,
+        server=server,
     )
 
 
 def handle_events(ctx: GameContext) -> bool:
-    """Process pygame events. Returns True if game should continue running."""
+    """Process pygame events. Returns True if game should continue running.
+
+    Note: This is synchronous. Async operations (like set_unit_plan) are queued
+    in ctx.pending_plan_issue to be processed in the main loop.
+    """
     for event in pygame.event.get():
         # Process pygame_gui events
         if ctx.ui_manager.process_events(event):
@@ -764,14 +775,16 @@ def handle_events(ctx: GameContext) -> bool:
                     view.freeze_frame = None
                 if view.plan_controls is not None:
                     if event.ui_element == view.plan_controls.issue_plan_btn:
-                        # Issue plan for this team
+                        # Issue plan for this team - queue for async processing
                         if (
                             view.working_plan is not None
                             and view.working_plan.orders
                             and view.selected_unit_id is not None
                         ):
-                            ctx.client.set_unit_plan(
-                                team, view.selected_unit_id, view.working_plan
+                            ctx.pending_plan_issue = (
+                                team,
+                                view.selected_unit_id,
+                                view.working_plan,
                             )
                             view.selected_unit_id = None
                             view.working_plan = None
@@ -824,8 +837,11 @@ def handle_events(ctx: GameContext) -> bool:
                             )
                         view.working_plan.orders.append(Move(target=grid_pos))
                     else:
-                        # Try to select a unit
-                        unit = find_unit_at_base(ctx.client, grid_pos, team)
+                        # Try to select a unit using cached knowledge
+                        base_region = ctx.client.get_base_region(team)
+                        unit = find_unit_at_base_sync(
+                            view.knowledge, base_region, grid_pos, team
+                        )
                         if unit is not None:
                             view.selected_unit_id = unit.id
                             # Initialize working plan when selecting a unit
@@ -897,10 +913,8 @@ def draw_ui(ctx: GameContext) -> None:
         plan_offset_x = ctx.team_offsets[team]
 
         if view.selected_unit_id is not None:
-            # Get the selected unit from player knowledge
-            knowledge = ctx.client.get_player_knowledge(
-                team, ctx.client.get_current_tick()
-            )
+            # Get the selected unit from player knowledge (use cached knowledge)
+            knowledge = view.knowledge
             selected_unit = None
             if view.selected_unit_id in knowledge.last_seen:
                 _, selected_unit = knowledge.last_seen[view.selected_unit_id]
@@ -995,38 +1009,56 @@ def draw_ui(ctx: GameContext) -> None:
     pygame.display.flip()
 
 
-def main() -> None:
+async def main() -> None:
     """Main game loop: initialize, then loop handling events, ticking, and drawing."""
-    ctx = initialize_game()
+    ctx = await initialize_game()
 
-    while True:
-        # Handle events
-        if not handle_events(ctx):
-            break
+    try:
+        while True:
+            # Handle events
+            if not handle_events(ctx):
+                break
 
-        # Tick game if appropriate (only in local/server mode)
-        if isinstance(ctx.client, LocalClient):
-            current_time = pygame.time.get_ticks()
-            if current_time - ctx.last_tick >= ctx.tick_interval:
-                tick_game(ctx.client.state)
-                for team, knowledge in ctx.client.knowledge.items():
-                    knowledge.tick_knowledge(ctx.client.state)
-                ctx.last_tick = current_time
-        elif isinstance(ctx.client, RemoteClient):
-            current_time = pygame.time.get_ticks()
-            if current_time - ctx.last_tick >= ctx.tick_interval:
-                ctx.views[ctx.client.team].knowledge = ctx.client.get_player_knowledge(
-                    ctx.client.team, ctx.client.get_current_tick() + 1
-                )
-                ctx.last_tick = current_time
-        else:
-            raise ValueError(f"Unknown client type: {type(ctx.client)}")
+            # Process pending plan issue (async operation)
+            if ctx.pending_plan_issue is not None:
+                team, unit_id, plan = ctx.pending_plan_issue
+                ctx.pending_plan_issue = None
+                await ctx.client.set_unit_plan(team, unit_id, plan)
 
-        # Draw
-        draw_ui(ctx)
+            # Tick game if appropriate (only in local/server mode)
+            if isinstance(ctx.client, LocalClient):
+                current_time = pygame.time.get_ticks()
+                if current_time - ctx.last_tick >= ctx.tick_interval:
+                    tick_game(ctx.client.state)
+                    for team, knowledge in ctx.client.knowledge.items():
+                        knowledge.tick_knowledge(ctx.client.state)
+                    ctx.last_tick = current_time
+            elif isinstance(ctx.client, RemoteClient):
+                current_time = pygame.time.get_ticks()
+                if current_time - ctx.last_tick >= ctx.tick_interval:
+                    ctx.views[ctx.client.team].knowledge = (
+                        await ctx.client.get_player_knowledge(
+                            ctx.client.team, ctx.client.get_current_tick() + 1
+                        )
+                    )
+                    ctx.last_tick = current_time
+            else:
+                raise ValueError(f"Unknown client type: {type(ctx.client)}")
 
-    pygame.quit()
+            # Draw
+            draw_ui(ctx)
+
+            # Yield to the event loop to allow other async tasks (like server) to run
+            await asyncio.sleep(0)
+
+    finally:
+        # Cleanup
+        if ctx.server is not None:
+            await ctx.server.stop()
+        if isinstance(ctx.client, RemoteClient):
+            await ctx.client.close()
+        pygame.quit()
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
