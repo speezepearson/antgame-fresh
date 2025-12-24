@@ -161,7 +161,7 @@ class RemoteClient(GameClient):
 
     def get_current_tick(self) -> Timestamp:
         if self._current_knowledge is None:
-            return Timestamp(0)
+            raise RuntimeError("Knowledge not yet fetched from server")
         return self._current_knowledge.tick
 
     def get_god_view(self) -> Optional[GameState]:
