@@ -552,7 +552,6 @@ def running_server() -> Iterator[RunningServerFixture]:
 
     # Cleanup
     server.stop()
-    time.sleep(0.3)
 
 @pytest.mark.integration
 class TestRemoteClient:
