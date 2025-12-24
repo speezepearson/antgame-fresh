@@ -17,8 +17,10 @@ from mechanics import (
     FoodInRangeCondition,
     FoodPresent,
     GameState,
+    IdleCondition,
     MoveHomeAction,
     MoveThereAction,
+    ResumeAction,
     Team,
     BasePresent,
     UnitPresent,
@@ -457,17 +459,29 @@ def find_unit_at_base(client: GameClient, pos: Pos, team: Team) -> Unit | None:
 
     return None
 
+attack_nearby_enemy_interrupt = Interrupt(
+    condition=EnemyInRangeCondition(distance=2),
+    actions=[MoveThereAction()],
+)
+flee_enemy_interrupt = Interrupt(
+    condition=EnemyInRangeCondition(distance=2),
+    actions=[MoveHomeAction()],
+)
+get_food_interrupt = Interrupt(
+    condition=FoodInRangeCondition(distance=2),
+    actions=[MoveThereAction(), ResumeAction()],
+)
+go_home_when_done_interrupt = Interrupt(
+    condition=IdleCondition(),
+    actions=[MoveHomeAction()],
+)
+
 
 def make_default_interrupts() -> list[Interrupt[Any]]:
     return [
-        Interrupt(
-            condition=EnemyInRangeCondition(distance=2),
-            actions=[MoveHomeAction() if random.random() < 0.5 else MoveThereAction()],
-        ),
-        Interrupt(
-            condition=FoodInRangeCondition(distance=2),
-            actions=[MoveThereAction(), MoveHomeAction()],
-        ),
+        attack_nearby_enemy_interrupt if random.random() < 0.5 else flee_enemy_interrupt,
+        get_food_interrupt,
+        go_home_when_done_interrupt,
     ]
 
 

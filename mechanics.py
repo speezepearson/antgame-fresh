@@ -6,7 +6,7 @@ from collections import defaultdict
 from copy import deepcopy
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Protocol, TypeVar, Generic, Callable, Any, NewType
+from typing import Literal, Protocol, TypeVar, Generic, Callable, Any, NewType
 import random
 import numpy as np
 
@@ -59,10 +59,9 @@ class Team(Enum):
     BLUE = "BLUE"
 
 
-@dataclass
+@dataclass(frozen=True)
 class MoveOrder:
     target: Pos
-    then_return_home: bool = False
 
 
 # What can be observed at a cell
@@ -195,6 +194,20 @@ class EnemyInRangeCondition:
                         return pos
         return None
 
+@dataclass(frozen=True)
+class IdleCondition:
+    """Condition: unit is idle.
+    """
+
+    @property
+    def description(self) -> str:
+        return "idle"
+
+    def evaluate(
+        self, unit: "Unit", observations: dict[Pos, list[CellContents]]
+    ) -> Literal[True] | None:
+        return True if len(unit.plan.orders) == 0 else None
+
 
 @dataclass(frozen=True)
 class BaseVisibleCondition:
@@ -295,8 +308,15 @@ class MoveThereAction:
 class MoveHomeAction:
     description = "move home"
 
-    def execute(self, unit: "Unit", data: Any) -> list[Order]:
+    def execute(self, unit: "Unit", data: object) -> list[Order]:
         return [Move(target=unit.home_pos())]
+
+@dataclass(frozen=True)
+class ResumeAction:
+    description = "move to base"
+
+    def execute(self, unit: "Unit", data: object) -> list[Order]:
+        return unit.plan.orders
 
 
 @dataclass(frozen=True)
