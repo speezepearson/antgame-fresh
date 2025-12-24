@@ -66,7 +66,7 @@ class LocalClient(GameClient):
 
     def get_player_knowledge(self, team: Team, tick: Timestamp) -> PlayerKnowledge:
         while self.state.tick < tick:
-            time.sleep(0.03)  # TODO: use a Condition instead of polling
+            time.sleep(0.03)
         return self.knowledge[team]
 
     def set_unit_plan(self, team: Team, unit_id: UnitId, plan: Plan) -> None:

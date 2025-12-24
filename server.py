@@ -70,8 +70,7 @@ class GameServer:
                         }
                     )
 
-                # Wait a bit before checking again
-                time.sleep(0.05)  # 50ms polling interval
+                time.sleep(0.05)
 
             # Timeout - return current knowledge anyway
             return jsonify(

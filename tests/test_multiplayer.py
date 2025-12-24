@@ -596,13 +596,12 @@ def running_server() -> Iterator[RunningServerFixture]:
     server.start()
 
     # Give server time to start
-    time.sleep(0.5)
+    time.sleep(0.5)  # TODO: instead of sleeping, we should wait on an Event that gets set by a callback that the server fires when it's ready to accept requests. If Flask doesn't offer that, that's a dealbreaker, and we should move to aiohttp.
 
     yield server, state, knowledge, port
 
     # Cleanup
     server.stop()
-    time.sleep(0.3)
 
 
 @pytest.mark.integration
