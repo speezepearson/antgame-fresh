@@ -302,6 +302,7 @@ def draw_god_view(
         )
 
 
+CELL_BRIGHTNESS_HALFLIFE = 100
 def draw_player_view(
     surface: pygame.Surface,
     view: PlayerView,
@@ -327,7 +328,7 @@ def draw_player_view(
     for pos, (last_observed_tick, _) in view.knowledge.last_observations.items():
         age = view_t - last_observed_tick
         # Exponential decay: 80 * 2^-(age/50)
-        brightness = int(80 * (2 ** (-(age / 50))))
+        brightness = int(80 * (2 ** (-(age / CELL_BRIGHTNESS_HALFLIFE))))
         brightness = max(0, min(80, brightness))  # Clamp to [0, 80]
 
         rect = pygame.Rect(
