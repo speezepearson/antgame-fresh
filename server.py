@@ -24,10 +24,12 @@ class GameServer:
         state: GameState,
         knowledge: dict[Team, PlayerKnowledge],
         port: int = 5000,
+        ready_event: threading.Event | None = None,
     ):
         self.state = state
         self.knowledge = knowledge
         self.port = port
+        self.ready_event = ready_event
         self.app = Flask(__name__)
         self._setup_routes()
         self.server_thread: threading.Thread | None = None
@@ -105,20 +107,30 @@ class GameServer:
 
     def start(self) -> None:
         """Start the server in a background thread."""
+        from werkzeug.serving import make_server
+
         if self.server_thread is not None:
             raise RuntimeError("Server already started")
 
+        # Disable Flask's default logging for cleaner output
+        import logging
+
+        log = logging.getLogger("werkzeug")
+        log.setLevel(logging.ERROR)
+
+        # Create server (binds socket immediately)
+        server = make_server("0.0.0.0", self.port, self.app, threaded=True)
+        ready_event = self.ready_event
+
         def run_server() -> None:
-            # Disable Flask's default logging for cleaner output
-            import logging
-
-            log = logging.getLogger("werkzeug")
-            log.setLevel(logging.ERROR)
-
-            self.app.run(host="0.0.0.0", port=self.port, threaded=True)
+            # Signal readiness from within the thread, just before serve_forever()
+            if ready_event is not None:
+                ready_event.set()
+            server.serve_forever()
 
         self.server_thread = threading.Thread(target=run_server, daemon=True)
         self.server_thread.start()
+
         print(f"Server started on port {self.port}")
 
     def stop(self) -> None:

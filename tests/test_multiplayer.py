@@ -592,11 +592,10 @@ def running_server() -> Iterator[RunningServerFixture]:
     for team in [Team.RED, Team.BLUE]:
         knowledge[team].record_observations_from_bases(state)
 
-    server = GameServer(state, knowledge, port=port)
+    ready_event = threading.Event()
+    server = GameServer(state, knowledge, port=port, ready_event=ready_event)
     server.start()
-
-    # Give server time to start
-    time.sleep(0.5)  # TODO: instead of sleeping, we should wait on an Event that gets set by a callback that the server fires when it's ready to accept requests. If Flask doesn't offer that, that's a dealbreaker, and we should move to aiohttp.
+    ready_event.wait(timeout=5.0)
 
     yield server, state, knowledge, port
 
