@@ -169,9 +169,6 @@ def compute_expected_trajectory(
     sim_unit = sim_state.units[unit.id]
 
     for _ in range(max_ticks):
-        if not sim_unit.plan.orders:
-            break
-
         tick_game(sim_state)
         positions.append(sim_unit.pos)
 
