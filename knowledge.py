@@ -17,6 +17,7 @@ from mechanics import (
     Empty,
     FoodPresent,
     GameState,
+    Interrupt,
     ObservationLog,
     RawObservations,
     Team,
@@ -43,6 +44,7 @@ class PlayerKnowledge:
         default_factory=dict
     )
     last_observations: LastObservations = field(default_factory=dict)
+    interrupt_library: dict[str, Interrupt[Any]] = field(default_factory=dict)
 
     def add_raw_observations(
         self, game: GameState, observations: RawObservations

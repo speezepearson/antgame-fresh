@@ -46,6 +46,97 @@ from mechanics import (
 TILE_SIZE = 16
 
 
+# Metadata for building interrupt editor UI
+@dataclass
+class ConditionType:
+    """Metadata about a condition type for UI purposes."""
+
+    name: str
+    factory: Any  # Callable that creates the condition
+    param_specs: dict[str, type]  # parameter name -> type
+    return_type: type  # What type this condition returns when triggered
+
+
+@dataclass
+class ActionType:
+    """Metadata about an action type for UI purposes."""
+
+    name: str
+    factory: Any  # Callable that creates the action
+    param_specs: dict[str, type]  # parameter name -> type
+    accepts_type: type  # What type this action accepts
+
+
+# Available condition types
+CONDITION_TYPES = [
+    ConditionType(
+        name="Enemy in Range",
+        factory=EnemyInRangeCondition,
+        param_specs={"distance": int},
+        return_type=Pos,
+    ),
+    ConditionType(
+        name="Food in Range",
+        factory=FoodInRangeCondition,
+        param_specs={"distance": int},
+        return_type=Pos,
+    ),
+    ConditionType(
+        name="Idle",
+        factory=IdleCondition,
+        param_specs={},
+        return_type=type(True),
+    ),
+    ConditionType(
+        name="Base Visible",
+        factory=BaseVisibleCondition,
+        param_specs={},
+        return_type=Pos,
+    ),
+    ConditionType(
+        name="Position Reached",
+        factory=PositionReachedCondition,
+        param_specs={"position": Pos},
+        return_type=Pos,
+    ),
+]
+
+# Available action types
+ACTION_TYPES = [
+    ActionType(
+        name="Move There",
+        factory=MoveThereAction,
+        param_specs={},
+        accepts_type=Pos,
+    ),
+    ActionType(
+        name="Move Home",
+        factory=MoveHomeAction,
+        param_specs={},
+        accepts_type=object,
+    ),
+    ActionType(
+        name="Resume",
+        factory=ResumeAction,
+        param_specs={},
+        accepts_type=object,
+    ),
+]
+
+
+def get_compatible_actions(condition_return_type: type) -> list[ActionType]:
+    """Get actions compatible with a given condition's return type."""
+    compatible = []
+    for action_type in ACTION_TYPES:
+        # object accepts any type
+        if action_type.accepts_type == object:
+            compatible.append(action_type)
+        # Check if types match (simplified type checking)
+        elif condition_return_type == action_type.accepts_type:
+            compatible.append(action_type)
+    return compatible
+
+
 @dataclass
 class TickControls:
     """UI controls for time navigation."""
@@ -67,10 +158,44 @@ class PlanControls:
 
 
 @dataclass
+class InterruptLibraryControls:
+    """UI controls for interrupt library management."""
+
+    window: pygame_gui.elements.UIWindow
+    interrupt_list: pygame_gui.elements.UITextBox
+    new_btn: pygame_gui.elements.UIButton
+    edit_btn: pygame_gui.elements.UIButton
+    delete_btn: pygame_gui.elements.UIButton
+    rename_btn: pygame_gui.elements.UIButton
+    duplicate_btn: pygame_gui.elements.UIButton
+    close_btn: pygame_gui.elements.UIButton
+    selected_interrupt_name: str | None = None
+
+
+@dataclass
+class InterruptEditorControls:
+    """UI controls for editing/creating an interrupt."""
+
+    window: pygame_gui.elements.UIWindow
+    name_entry: pygame_gui.elements.UITextEntryLine
+    condition_dropdown: pygame_gui.elements.UIDropDownMenu
+    condition_param_entries: dict[str, pygame_gui.elements.UITextEntryLine]
+    action_list: pygame_gui.elements.UITextBox
+    add_action_btn: pygame_gui.elements.UIButton
+    remove_action_btn: pygame_gui.elements.UIButton
+    save_btn: pygame_gui.elements.UIButton
+    cancel_btn: pygame_gui.elements.UIButton
+    selected_condition_type: ConditionType | None = None
+    selected_actions: list[tuple[ActionType, dict[str, Any]]] = field(default_factory=list)
+
+
+@dataclass
 class PlayerView:
     knowledge: PlayerKnowledge
     tick_controls: TickControls
     plan_controls: PlanControls | None = None
+    library_controls: InterruptLibraryControls | None = None
+    editor_controls: InterruptEditorControls | None = None
     freeze_frame: Timestamp | None = None
     selected_unit_id: UnitId | None = None
     working_plan: Plan | None = None
@@ -96,6 +221,7 @@ class GameContext:
     map_pixel_size: int
     tick_interval: int
     last_tick: int
+    library_buttons: dict[Team, pygame_gui.elements.UIButton] = field(default_factory=dict)
 
 
 def format_plan(plan: Plan, unit: Unit) -> list[str]:
@@ -486,6 +612,126 @@ def make_default_interrupts() -> list[Interrupt[Any]]:
     ]
 
 
+def initialize_interrupt_library() -> dict[str, Interrupt[Any]]:
+    """Create the initial interrupt library with default interrupts."""
+    return {
+        "attack_nearby_enemy": attack_nearby_enemy_interrupt,
+        "flee_enemy": flee_enemy_interrupt,
+        "get_food": get_food_interrupt,
+        "go_home_when_done": go_home_when_done_interrupt,
+    }
+
+
+def get_default_plan_interrupts(library: dict[str, Interrupt[Any]]) -> list[Interrupt[Any]]:
+    """Get the default interrupts to use for new plans from the library."""
+    # Use the interrupts from the library if available
+    default_names = ["get_food", "go_home_when_done"]
+    interrupts = []
+    for name in default_names:
+        if name in library:
+            interrupts.append(library[name])
+    # Add attack or flee (pick one from library)
+    if "attack_nearby_enemy" in library:
+        interrupts.insert(0, library["attack_nearby_enemy"])
+    elif "flee_enemy" in library:
+        interrupts.insert(0, library["flee_enemy"])
+    return interrupts if interrupts else []
+
+
+def format_interrupt_library(library: dict[str, Interrupt[Any]]) -> str:
+    """Format an interrupt library as HTML for display."""
+    if not library:
+        return "<b>No interrupts in library</b>"
+
+    lines = ["<b>Interrupt Library:</b><br>"]
+    for name, interrupt in sorted(library.items()):
+        condition_desc = interrupt.condition.description
+        actions_desc = "; ".join([action.description for action in interrupt.actions])
+        lines.append(f"<br><b>{name}</b>: If {condition_desc}: {actions_desc}")
+
+    return "".join(lines)
+
+
+def create_interrupt_library_window(
+    ctx: GameContext, team: Team
+) -> InterruptLibraryControls:
+    """Create a window showing the interrupt library for a team."""
+    window_width = 600
+    window_height = 400
+    window = pygame_gui.elements.UIWindow(
+        rect=pygame.Rect(100, 100, window_width, window_height),
+        manager=ctx.ui_manager,
+        window_display_title=f"{team.value} Interrupt Library",
+    )
+
+    # Interrupt list text box
+    interrupt_list = pygame_gui.elements.UITextBox(
+        html_text="",
+        relative_rect=pygame.Rect(10, 10, window_width - 20, window_height - 100),
+        manager=ctx.ui_manager,
+        container=window,
+    )
+
+    # Buttons
+    btn_y = window_height - 80
+    btn_width = 80
+    btn_height = 25
+    btn_spacing = 10
+
+    new_btn = pygame_gui.elements.UIButton(
+        relative_rect=pygame.Rect(10, btn_y, btn_width, btn_height),
+        text="New",
+        manager=ctx.ui_manager,
+        container=window,
+    )
+
+    edit_btn = pygame_gui.elements.UIButton(
+        relative_rect=pygame.Rect(10 + (btn_width + btn_spacing) * 1, btn_y, btn_width, btn_height),
+        text="Edit",
+        manager=ctx.ui_manager,
+        container=window,
+    )
+
+    delete_btn = pygame_gui.elements.UIButton(
+        relative_rect=pygame.Rect(10 + (btn_width + btn_spacing) * 2, btn_y, btn_width, btn_height),
+        text="Delete",
+        manager=ctx.ui_manager,
+        container=window,
+    )
+
+    rename_btn = pygame_gui.elements.UIButton(
+        relative_rect=pygame.Rect(10 + (btn_width + btn_spacing) * 3, btn_y, btn_width, btn_height),
+        text="Rename",
+        manager=ctx.ui_manager,
+        container=window,
+    )
+
+    duplicate_btn = pygame_gui.elements.UIButton(
+        relative_rect=pygame.Rect(10 + (btn_width + btn_spacing) * 4, btn_y, btn_width, btn_height),
+        text="Duplicate",
+        manager=ctx.ui_manager,
+        container=window,
+    )
+
+    close_btn = pygame_gui.elements.UIButton(
+        relative_rect=pygame.Rect(10 + (btn_width + btn_spacing) * 5, btn_y, btn_width, btn_height),
+        text="Close",
+        manager=ctx.ui_manager,
+        container=window,
+    )
+
+    return InterruptLibraryControls(
+        window=window,
+        interrupt_list=interrupt_list,
+        new_btn=new_btn,
+        edit_btn=edit_btn,
+        delete_btn=delete_btn,
+        rename_btn=rename_btn,
+        duplicate_btn=duplicate_btn,
+        close_btn=close_btn,
+    )
+
+
 def initialize_game() -> GameContext:
     """Parse arguments and initialize game state, pygame, and UI elements."""
     # Parse command-line arguments
@@ -611,6 +857,18 @@ def initialize_game() -> GameContext:
         Team.BLUE: blue_offset_x,
     }
 
+    # Create library buttons for each team
+    red_library_btn = pygame_gui.elements.UIButton(
+        relative_rect=pygame.Rect(red_offset_x, padding, 60, 20),
+        text="Library",
+        manager=ui_manager,
+    )
+    blue_library_btn = pygame_gui.elements.UIButton(
+        relative_rect=pygame.Rect(blue_offset_x, padding, 60, 20),
+        text="Library",
+        manager=ui_manager,
+    )
+
     # Create time sliders for RED team
     red_tick_controls = TickControls(
         slider=pygame_gui.elements.UIHorizontalSlider(
@@ -671,30 +929,37 @@ def initialize_game() -> GameContext:
         client_team = Team[args.team]
 
         # Create a placeholder knowledge that will be updated by fetches
+        # Initialize interrupt library for the initial knowledge
+        initial_knowledge.interrupt_library = initialize_interrupt_library()
+
         if client_team == Team.RED:
             red_view = PlayerView(
                 knowledge=initial_knowledge,
                 tick_controls=red_tick_controls,
             )
             # Create a dummy blue view (won't be visible)
+            dummy_blue_knowledge = PlayerKnowledge(
+                team=Team.BLUE,
+                grid_width=grid_width,
+                grid_height=grid_height,
+                tick=Timestamp(0),
+            )
+            dummy_blue_knowledge.interrupt_library = initialize_interrupt_library()
             blue_view = PlayerView(
-                knowledge=PlayerKnowledge(
-                    team=Team.BLUE,
-                    grid_width=grid_width,
-                    grid_height=grid_height,
-                    tick=Timestamp(0),
-                ),
+                knowledge=dummy_blue_knowledge,
                 tick_controls=blue_tick_controls,
             )
         else:
             # Create a dummy red view (won't be visible)
+            dummy_red_knowledge = PlayerKnowledge(
+                team=Team.RED,
+                grid_width=grid_width,
+                grid_height=grid_height,
+                tick=Timestamp(0),
+            )
+            dummy_red_knowledge.interrupt_library = initialize_interrupt_library()
             red_view = PlayerView(
-                knowledge=PlayerKnowledge(
-                    team=Team.RED,
-                    grid_width=grid_width,
-                    grid_height=grid_height,
-                    tick=Timestamp(0),
-                ),
+                knowledge=dummy_red_knowledge,
                 tick_controls=red_tick_controls,
             )
             blue_view = PlayerView(
@@ -705,22 +970,27 @@ def initialize_game() -> GameContext:
         # Local or server mode: create views for both teams
         assert state is not None, "State should not be None in local/server mode"
 
+        red_knowledge = PlayerKnowledge(
+            team=Team.RED,
+            grid_width=grid_width,
+            grid_height=grid_height,
+            tick=state.tick,
+        )
+        red_knowledge.interrupt_library = initialize_interrupt_library()
         red_view = PlayerView(
-            knowledge=PlayerKnowledge(
-                team=Team.RED,
-                grid_width=grid_width,
-                grid_height=grid_height,
-                tick=state.tick,
-            ),
+            knowledge=red_knowledge,
             tick_controls=red_tick_controls,
         )
+
+        blue_knowledge = PlayerKnowledge(
+            team=Team.BLUE,
+            grid_width=grid_width,
+            grid_height=grid_height,
+            tick=state.tick,
+        )
+        blue_knowledge.interrupt_library = initialize_interrupt_library()
         blue_view = PlayerView(
-            knowledge=PlayerKnowledge(
-                team=Team.BLUE,
-                grid_width=grid_width,
-                grid_height=grid_height,
-                tick=state.tick,
-            ),
+            knowledge=blue_knowledge,
             tick_controls=blue_tick_controls,
         )
 
@@ -744,6 +1014,11 @@ def initialize_game() -> GameContext:
         Team.BLUE: blue_view,
     }
 
+    library_buttons = {
+        Team.RED: red_library_btn,
+        Team.BLUE: blue_library_btn,
+    }
+
     return GameContext(
         client=client,
         grid_width=grid_width,
@@ -761,6 +1036,7 @@ def initialize_game() -> GameContext:
         map_pixel_size=map_pixel_size,
         tick_interval=tick_interval,
         last_tick=last_tick,
+        library_buttons=library_buttons,
     )
 
 
@@ -774,11 +1050,56 @@ def handle_events(ctx: GameContext) -> bool:
         if event.type == pygame.QUIT:
             return False
 
+        # Handle window close events
+        if event.type == pygame_gui.UI_WINDOW_CLOSE:
+            for team in Team:
+                view = ctx.views[team]
+                if view.library_controls is not None and event.ui_element == view.library_controls.window:
+                    view.library_controls = None
+
         for team in Team:
             view = ctx.views[team]
 
             # Handle pygame_gui button clicks
             if event.type == pygame_gui.UI_BUTTON_PRESSED:
+                # Handle library button
+                if event.ui_element == ctx.library_buttons[team]:
+                    if view.library_controls is None:
+                        view.library_controls = create_interrupt_library_window(ctx, team)
+
+                # Handle library control buttons
+                if view.library_controls is not None:
+                    if event.ui_element == view.library_controls.close_btn:
+                        view.library_controls.window.kill()  # type: ignore[no-untyped-call]
+                        view.library_controls = None
+                    elif event.ui_element == view.library_controls.new_btn:
+                        # Create a new interrupt with default values
+                        new_name = f"new_interrupt_{len(view.knowledge.interrupt_library)}"
+                        view.knowledge.interrupt_library[new_name] = Interrupt(
+                            condition=IdleCondition(),
+                            actions=[MoveHomeAction()],
+                        )
+                    elif event.ui_element == view.library_controls.edit_btn:
+                        # For now, just show a message that editing is not yet implemented
+                        # TODO: Implement interrupt editor
+                        pass
+                    elif event.ui_element == view.library_controls.delete_btn:
+                        # Delete the first interrupt (for now - TODO: implement selection)
+                        if view.knowledge.interrupt_library:
+                            first_key = next(iter(view.knowledge.interrupt_library))
+                            del view.knowledge.interrupt_library[first_key]
+                    elif event.ui_element == view.library_controls.rename_btn:
+                        # TODO: Implement rename dialog
+                        pass
+                    elif event.ui_element == view.library_controls.duplicate_btn:
+                        # Duplicate the first interrupt (for now - TODO: implement selection)
+                        if view.knowledge.interrupt_library:
+                            first_key = next(iter(view.knowledge.interrupt_library))
+                            interrupt = view.knowledge.interrupt_library[first_key]
+                            new_name = f"{first_key}_copy"
+                            view.knowledge.interrupt_library[new_name] = interrupt
+                        pass
+
                 # Handle plan control buttons
                 if event.ui_element == view.tick_controls.live_btn:
                     view.freeze_frame = None
@@ -806,7 +1127,7 @@ def handle_events(ctx: GameContext) -> bool:
                         # Clear plan for this team
                         if view.selected_unit_id is not None:
                             view.working_plan = Plan(
-                                interrupts=make_default_interrupts()
+                                interrupts=get_default_plan_interrupts(view.knowledge.interrupt_library)
                             )
                         break
 
@@ -840,7 +1161,7 @@ def handle_events(ctx: GameContext) -> bool:
                         # Append Move order to working plan
                         if view.working_plan is None:
                             view.working_plan = Plan(
-                                interrupts=make_default_interrupts()
+                                interrupts=get_default_plan_interrupts(view.knowledge.interrupt_library)
                             )
                         view.working_plan.orders.append(Move(target=grid_pos))
                     else:
@@ -850,7 +1171,7 @@ def handle_events(ctx: GameContext) -> bool:
                             view.selected_unit_id = unit.id
                             # Initialize working plan when selecting a unit
                             view.working_plan = Plan(
-                                interrupts=make_default_interrupts()
+                                interrupts=get_default_plan_interrupts(view.knowledge.interrupt_library)
                             )
 
     return True
@@ -1005,6 +1326,12 @@ def draw_ui(ctx: GameContext) -> None:
                 view.plan_controls.clear_plan_btn.kill()  # type: ignore[no-untyped-call]
                 view.plan_controls.selection_label.hide()  # type: ignore[no-untyped-call]
                 view.plan_controls = None
+
+        # Update interrupt library window if open
+        if view.library_controls is not None:
+            library_html = format_interrupt_library(view.knowledge.interrupt_library)
+            view.library_controls.interrupt_list.set_text(library_html)
+            view.library_controls.interrupt_list.rebuild()
 
     # Update UI manager
     ctx.ui_manager.update(ctx.clock.tick(60) / 1000.0)
