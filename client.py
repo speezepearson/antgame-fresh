@@ -66,7 +66,7 @@ class LocalClient(GameClient):
 
     def get_player_knowledge(self, team: Team, tick: Timestamp) -> PlayerKnowledge:
         while self.state.tick < tick:
-            time.sleep(0.03) # TODO: use a Condition instead of polling
+            time.sleep(0.03)  # TODO: use a Condition instead of polling
         return self.knowledge[team]
 
     def set_unit_plan(self, team: Team, unit_id: UnitId, plan: Plan) -> None:
@@ -103,11 +103,9 @@ class RemoteClient(GameClient):
     def _fetch_knowledge(self, tick: Timestamp) -> None:
         """Fetch knowledge from server, waiting for next tick if needed."""
         # Wait for tick > last_tick
-        print('fetching knowledge', self.team.name, tick)
+        print("fetching knowledge", self.team.name, tick)
         response = requests.get(
-            f"{self.url}/knowledge/{self.team.name}",
-            params={"tick": tick},
-            timeout=30
+            f"{self.url}/knowledge/{self.team.name}", params={"tick": tick}, timeout=30
         )
         # print('response', response.status_code, response.text)
         response.raise_for_status()
@@ -115,10 +113,18 @@ class RemoteClient(GameClient):
 
         # Deserialize knowledge
         from serialization import deserialize_player_knowledge
+
         self._current_knowledge = deserialize_player_knowledge(data["knowledge"])
         self._base_region = deserialize_region(data["base_region"])
         self._last_tick = self._current_knowledge.tick
-        print('fetched knowledge for', self.team.name, 'at >=', tick, ', now t=', self._last_tick)
+        print(
+            "fetched knowledge for",
+            self.team.name,
+            "at >=",
+            tick,
+            ", now t=",
+            self._last_tick,
+        )
 
     def get_player_knowledge(self, team: Team, tick: Timestamp) -> PlayerKnowledge:
         if team != self.team:
@@ -139,11 +145,12 @@ class RemoteClient(GameClient):
             raise ValueError(f"Can only control own team ({self.team}) in remote mode")
 
         from serialization import serialize_plan
+
         try:
             response = requests.post(
                 f"{self.url}/act/{team.name}/{unit_id}",
                 json=serialize_plan(plan),
-                timeout=5
+                timeout=5,
             )
             response.raise_for_status()
         except Exception as e:

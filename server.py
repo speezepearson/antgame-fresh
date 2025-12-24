@@ -59,19 +59,27 @@ class GameServer:
                 current_tick = self.knowledge[team].tick
                 if current_tick >= requested_tick:
                     # Knowledge is ready
-                    return jsonify({
-                        "knowledge": serialize_player_knowledge(self.knowledge[team]),
-                        "base_region": serialize_region(self.state.base_regions[team]),
-                    })
+                    return jsonify(
+                        {
+                            "knowledge": serialize_player_knowledge(
+                                self.knowledge[team]
+                            ),
+                            "base_region": serialize_region(
+                                self.state.base_regions[team]
+                            ),
+                        }
+                    )
 
                 # Wait a bit before checking again
                 time.sleep(0.05)  # 50ms polling interval
 
             # Timeout - return current knowledge anyway
-            return jsonify({
-                "knowledge": serialize_player_knowledge(self.knowledge[team]),
-                "base_region": serialize_region(self.state.base_regions[team]),
-            })
+            return jsonify(
+                {
+                    "knowledge": serialize_player_knowledge(self.knowledge[team]),
+                    "base_region": serialize_region(self.state.base_regions[team]),
+                }
+            )
 
         @self.app.route("/act/<team_name>/<int:unit_id>", methods=["POST"])
         def set_unit_plan(team_name: str, unit_id: int) -> Any:
@@ -104,7 +112,8 @@ class GameServer:
         def run_server() -> None:
             # Disable Flask's default logging for cleaner output
             import logging
-            log = logging.getLogger('werkzeug')
+
+            log = logging.getLogger("werkzeug")
             log.setLevel(logging.ERROR)
 
             self.app.run(host="0.0.0.0", port=self.port, threaded=True)

@@ -102,11 +102,15 @@ def test_serialize_deserialize_cell_contents():
 
     # BasePresent
     base_present = BasePresent(team=Team.BLUE)
-    assert deserialize_cell_contents(serialize_cell_contents(base_present)) == base_present
+    assert (
+        deserialize_cell_contents(serialize_cell_contents(base_present)) == base_present
+    )
 
     # FoodPresent
     food_present = FoodPresent(count=5)
-    assert deserialize_cell_contents(serialize_cell_contents(food_present)) == food_present
+    assert (
+        deserialize_cell_contents(serialize_cell_contents(food_present)) == food_present
+    )
 
 
 def test_serialize_deserialize_order():
@@ -278,9 +282,7 @@ def test_serialize_deserialize_player_knowledge():
             positions=[Pos(3, 3), Pos(4, 4)],
         )
     }
-    knowledge.last_observations = {
-        Pos(1, 1): (Timestamp(4), [FoodPresent(count=2)])
-    }
+    knowledge.last_observations = {Pos(1, 1): (Timestamp(4), [FoodPresent(count=2)])}
 
     data = serialize_player_knowledge(knowledge)
     deserialized = deserialize_player_knowledge(data)
@@ -297,6 +299,7 @@ def test_serialize_deserialize_player_knowledge():
 
 # ===== LocalClient Tests =====
 
+
 def test_local_client_get_player_knowledge():
     """Test LocalClient returns correct player knowledge."""
     state = make_game(grid_width=16, grid_height=16)
@@ -307,7 +310,9 @@ def test_local_client_get_player_knowledge():
     client = LocalClient(state=state, knowledge=knowledge)
 
     assert client.get_player_knowledge(Team.RED, tick=state.tick) == knowledge[Team.RED]
-    assert client.get_player_knowledge(Team.BLUE, tick=state.tick) == knowledge[Team.BLUE]
+    assert (
+        client.get_player_knowledge(Team.BLUE, tick=state.tick) == knowledge[Team.BLUE]
+    )
 
 
 def test_local_client_set_unit_plan():
@@ -406,7 +411,7 @@ def test_app():
     server = GameServer(state, knowledge, port=5000)
     # Use Flask test client instead of starting actual server
     app = server.app
-    app.config['TESTING'] = True
+    app.config["TESTING"] = True
 
     yield app.test_client(), state, knowledge
 
@@ -564,6 +569,8 @@ def test_server_set_unit_plan_unit_not_in_base(test_app):
 
 
 RunningServerFixture = tuple[GameServer, GameState, dict[Team, PlayerKnowledge], int]
+
+
 @pytest.fixture
 def running_server() -> Iterator[RunningServerFixture]:
     """Create and start a real server for integration tests.
@@ -614,7 +621,9 @@ def test_remote_client_initialization(running_server: RunningServerFixture) -> N
 
 
 @pytest.mark.integration
-def test_remote_client_get_player_knowledge(running_server: RunningServerFixture) -> None:
+def test_remote_client_get_player_knowledge(
+    running_server: RunningServerFixture,
+) -> None:
     """Test RemoteClient can fetch player knowledge."""
     server, state, knowledge, port = running_server
 
@@ -652,7 +661,9 @@ def test_remote_client_set_unit_plan(running_server: RunningServerFixture) -> No
 
 
 @pytest.mark.integration
-def test_remote_client_set_unit_plan_wrong_team(running_server: RunningServerFixture) -> None:
+def test_remote_client_set_unit_plan_wrong_team(
+    running_server: RunningServerFixture,
+) -> None:
     """Test RemoteClient cannot set plans for other team."""
     server, state, knowledge, port = running_server
 
@@ -702,7 +713,9 @@ def test_remote_client_get_god_view(running_server: RunningServerFixture) -> Non
 
 
 @pytest.mark.integration
-def test_remote_client_get_available_teams(running_server: RunningServerFixture) -> None:
+def test_remote_client_get_available_teams(
+    running_server: RunningServerFixture,
+) -> None:
     """Test RemoteClient only returns own team."""
     server, state, knowledge, port = running_server
 
@@ -754,7 +767,9 @@ def test_client_server_integration(running_server: RunningServerFixture) -> None
     red_unit = next(u for u in state.units.values() if u.team == Team.RED)
     blue_unit = next(u for u in state.units.values() if u.team == Team.BLUE)
 
-    red_client.set_unit_plan(Team.RED, red_unit.id, Plan(orders=[Move(target=Pos(8, 8))]))
+    red_client.set_unit_plan(
+        Team.RED, red_unit.id, Plan(orders=[Move(target=Pos(8, 8))])
+    )
     blue_client.set_unit_plan(
         Team.BLUE, blue_unit.id, Plan(orders=[Move(target=Pos(9, 9))])
     )

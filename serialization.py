@@ -192,7 +192,9 @@ def serialize_plan(plan: Plan) -> Dict[str, Any]:
 def deserialize_plan(data: Dict[str, Any]) -> Plan:
     return Plan(
         orders=[deserialize_order(order) for order in data["orders"]],
-        interrupts=[deserialize_interrupt(interrupt) for interrupt in data["interrupts"]],
+        interrupts=[
+            deserialize_interrupt(interrupt) for interrupt in data["interrupts"]
+        ],
     )
 
 
@@ -250,7 +252,9 @@ def deserialize_observation_log(data: Dict[str, Any]) -> ObservationLog:
         for pos_str, contents_list in observations.items():
             x, y = pos_str.split(",")
             pos = Pos(int(x), int(y))
-            result[timestamp][pos] = [deserialize_cell_contents(c) for c in contents_list]
+            result[timestamp][pos] = [
+                deserialize_cell_contents(c) for c in contents_list
+            ]
     return result
 
 
