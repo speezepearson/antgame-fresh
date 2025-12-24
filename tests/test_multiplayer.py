@@ -4,7 +4,8 @@ import pytest
 import responses
 import threading
 import time
-from typing import Any, Generator, Iterator
+from typing import Any, AsyncIterator, Generator, Iterator
+from aiohttp.test_utils import TestClient, TestServer
 
 from core import Pos, Region, Timestamp
 from mechanics import (
@@ -373,8 +374,8 @@ class TestGameServer:
     """Tests for the GameServer HTTP endpoints."""
 
     @pytest.fixture
-    def test_app(self):
-        """Create a test Flask app with game state."""
+    async def test_app(self) -> AsyncIterator[tuple[Any, GameState, dict[Team, PlayerKnowledge]]]:
+        """Create a test aiohttp app with game state."""
         state = make_game(grid_width=16, grid_height=16)
         knowledge = {
             Team.RED: PlayerKnowledge(Team.RED, 16, 16, state.tick),
@@ -386,22 +387,19 @@ class TestGameServer:
             knowledge[team].record_observations_from_bases(state)
 
         server = GameServer(state, knowledge, port=5000)
-        # Use Flask test client instead of starting actual server
-        app = server.app
-        app.config['TESTING'] = True
+        app = server._create_app()
 
-        yield app.test_client(), state, knowledge
+        async with TestClient(TestServer(app)) as client:
+            yield client, state, knowledge
 
-        # No cleanup needed - test client doesn't start threads
-
-    def test_returns_knowledge_for_valid_team(self, test_app):
+    async def test_returns_knowledge_for_valid_team(self, test_app):
         """Test server /knowledge endpoint returns data for valid team."""
         client, state, knowledge = test_app
 
-        response = client.get("/knowledge/RED")
-        assert response.status_code == 200
+        response = await client.get("/knowledge/RED")
+        assert response.status == 200
 
-        data = response.get_json()
+        data = await response.json()
         assert "knowledge" in data
         assert "base_region" in data
 
@@ -410,15 +408,15 @@ class TestGameServer:
         assert knowledge_data["grid_width"] == 16
         assert knowledge_data["grid_height"] == 16
 
-    def test_rejects_invalid_team(self, test_app):
+    async def test_rejects_invalid_team(self, test_app):
         """Test server /knowledge endpoint rejects invalid team."""
         client, state, knowledge = test_app
 
-        response = client.get("/knowledge/INVALID")
-        assert response.status_code == 400
-        assert "error" in response.get_json()
+        response = await client.get("/knowledge/INVALID")
+        assert response.status == 400
+        assert "error" in await response.json()
 
-    def test_returns_knowledge_at_requested_tick(self, test_app):
+    async def test_returns_knowledge_at_requested_tick(self, test_app):
         """Test server /knowledge endpoint with tick parameter."""
         client, state, knowledge = test_app
 
@@ -427,13 +425,13 @@ class TestGameServer:
         for k in knowledge.values():
             k.tick_knowledge(state)
 
-        response = client.get("/knowledge/RED?tick=1")
-        assert response.status_code == 200
+        response = await client.get("/knowledge/RED?tick=1")
+        assert response.status == 200
 
-        data = response.get_json()
+        data = await response.json()
         assert data["knowledge"]["tick"] >= 1
 
-    def test_returns_immediately_for_past_tick(self, test_app):
+    async def test_returns_immediately_for_past_tick(self, test_app):
         """Test server returns immediately if knowledge already at requested tick."""
         client, state, knowledge = test_app
 
@@ -445,14 +443,14 @@ class TestGameServer:
             k.tick_knowledge(state)
 
         start_time = time.time()
-        response = client.get("/knowledge/RED?tick=1")
+        response = await client.get("/knowledge/RED?tick=1")
         elapsed = time.time() - start_time
 
-        assert response.status_code == 200
+        assert response.status == 200
         assert elapsed < 0.5  # Should be nearly instant
-        assert response.get_json()["knowledge"]["tick"] >= 1
+        assert (await response.json())["knowledge"]["tick"] >= 1
 
-    def test_sets_unit_plan(self, test_app):
+    async def test_sets_unit_plan(self, test_app):
         """Test server /act endpoint sets plan for unit in base."""
         client, state, knowledge = test_app
 
@@ -464,17 +462,17 @@ class TestGameServer:
             "interrupts": [],
         }
 
-        response = client.post(
+        response = await client.post(
             f"/act/RED/{unit_id}",
             json=plan_data,
         )
-        assert response.status_code == 200
-        assert response.get_json()["success"] is True
+        assert response.status == 200
+        assert (await response.json())["success"] is True
 
         assert len(state.units[unit_id].plan.orders) == 1
         assert state.units[unit_id].plan.orders[0].target == Pos(10, 10)
 
-    def test_rejects_plan_for_invalid_team(self, test_app):
+    async def test_rejects_plan_for_invalid_team(self, test_app):
         """Test server /act endpoint rejects invalid team."""
         client, state, knowledge = test_app
 
@@ -483,25 +481,25 @@ class TestGameServer:
             "interrupts": [],
         }
 
-        response = client.post(
+        response = await client.post(
             "/act/INVALID/1",
             json=plan_data,
         )
-        assert response.status_code == 400
-        assert "error" in response.get_json()
+        assert response.status == 400
+        assert "error" in await response.json()
 
-    def test_rejects_invalid_plan_data(self, test_app):
+    async def test_rejects_invalid_plan_data(self, test_app):
         """Test server /act endpoint rejects malformed plan data."""
         client, state, knowledge = test_app
 
-        response = client.post(
+        response = await client.post(
             "/act/RED/1",
             json={"invalid": "data"},
         )
-        assert response.status_code == 400
-        assert "error" in response.get_json()
+        assert response.status == 400
+        assert "error" in await response.json()
 
-    def test_rejects_plan_for_unit_not_in_base(self, test_app):
+    async def test_rejects_plan_for_unit_not_in_base(self, test_app):
         """Test server rejects plan for unit not in base."""
         client, state, knowledge = test_app
 
@@ -513,12 +511,12 @@ class TestGameServer:
             "interrupts": [],
         }
 
-        response = client.post(
+        response = await client.post(
             f"/act/RED/{red_unit.id}",
             json=plan_data,
         )
-        assert response.status_code == 400
-        assert "error" in response.get_json()
+        assert response.status == 400
+        assert "error" in await response.json()
 
 
 # ===== RemoteClient Tests (Integration - requires real server) =====
@@ -545,17 +543,15 @@ def running_server() -> Iterator[RunningServerFixture]:
     for team in [Team.RED, Team.BLUE]:
         knowledge[team].record_observations_from_bases(state)
 
-    server = GameServer(state, knowledge, port=port)
+    ready_event = threading.Event()
+    server = GameServer(state, knowledge, port=port, ready_event=ready_event)
     server.start()
-
-    # Give server time to start
-    time.sleep(0.5)  # TODO: instead of sleeping, we should wait on an Event that gets set by a callback that the server fires when it's ready to accept requests. If Flask doesn't offer that, that's a dealbreaker, and we should move to aiohttp.
+    ready_event.wait(timeout=5.0)
 
     yield server, state, knowledge, port
 
     # Cleanup
     server.stop()
-    time.sleep(0.3)
 
 @pytest.mark.integration
 class TestRemoteClient:
