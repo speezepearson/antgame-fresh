@@ -47,6 +47,10 @@ from mechanics import (
 # Rendering Constants
 TILE_SIZE = 16
 
+# Checkbox textures for UITextureToggle
+TEX_CHECKBOX_CHECKED = arcade.load_texture(":resources:gui_basic_assets/checkbox/blue_check.png")
+TEX_CHECKBOX_UNCHECKED = arcade.load_texture(":resources:gui_basic_assets/checkbox/empty.png")
+
 
 @dataclass
 class TickControls:
@@ -69,16 +73,15 @@ class DispositionControls:
 class PlanControls:
     """UI controls for plan editing."""
 
-    text_area: arcade.gui.UITextArea | None
-    last_plan_text: str
-    issue_plan_btn: arcade.gui.UIFlatButton | None
-    clear_plan_btn: arcade.gui.UIFlatButton | None
-    selection_label: arcade.gui.UILabel | None
-    fight_checkbox: arcade.gui.UIFlatButton | None
-    flee_checkbox: arcade.gui.UIFlatButton | None
-    forage_checkbox: arcade.gui.UIFlatButton | None
-    come_back_checkbox: arcade.gui.UIFlatButton | None
-    checkbox_states: dict[str, bool] = field(default_factory=dict)
+    container: arcade.gui.UIAnchorLayout
+    text_area: arcade.gui.UITextArea
+    issue_plan_btn: arcade.gui.UIFlatButton
+    clear_plan_btn: arcade.gui.UIFlatButton
+    selection_label: arcade.gui.UILabel
+    fight_checkbox: arcade.gui.UITextureToggle
+    flee_checkbox: arcade.gui.UITextureToggle
+    forage_checkbox: arcade.gui.UITextureToggle
+    come_back_checkbox: arcade.gui.UITextureToggle
 
 
 @dataclass
@@ -569,6 +572,146 @@ def make_initial_working_plan_interrupts(unit_type: UnitType) -> list[Interrupt[
         )
 
 
+def create_plan_controls(
+    team: Team,
+    unit_type: UnitType,
+    offset_x: int,
+    arcade_plan_y: int,
+    plan_box_width: int,
+    plan_box_height: int,
+) -> PlanControls:
+    """Create the plan control widgets for a selected unit."""
+    # Default checkbox states based on unit type
+    if unit_type == UnitType.SCOUT:
+        fight_default, flee_default = False, True
+    else:
+        fight_default, flee_default = True, False
+
+    # Create main container
+    container = arcade.gui.UIAnchorLayout()
+
+    # Vertical layout for all plan controls
+    main_box = arcade.gui.UIBoxLayout(vertical=True, space_between=5)
+
+    # Selection label
+    team_name = team.value
+    selection_label = arcade.gui.UILabel(
+        text=f"Selected: {team_name} unit - click {team_name}'s map to add waypoints",
+        font_size=10,
+        text_color=arcade.color.WHITE,
+    )
+    main_box.add(selection_label)
+
+    # Plan text area with border
+    text_area = arcade.gui.UITextArea(
+        text="Orders: (none)\nInterrupts:",
+        width=plan_box_width,
+        height=plan_box_height,
+        font_size=10,
+        text_color=arcade.color.WHITE,
+    )
+    text_area.with_background(color=arcade.types.Color(40, 40, 40, 255))
+    text_area.with_border(color=arcade.color.WHITE, width=2)
+    text_area.with_padding(all=5)
+    main_box.add(text_area)
+
+    # Button row
+    button_row = arcade.gui.UIBoxLayout(vertical=False, space_between=10)
+    issue_plan_btn = arcade.gui.UIFlatButton(
+        text="Issue Plan",
+        width=80,
+        height=25,
+        style=arcade.gui.UIFlatButton.STYLE_BLUE,
+    )
+    clear_plan_btn = arcade.gui.UIFlatButton(
+        text="Clear",
+        width=60,
+        height=25,
+        style=arcade.gui.UIFlatButton.STYLE_RED,
+    )
+    button_row.add(issue_plan_btn)
+    button_row.add(clear_plan_btn)
+    main_box.add(button_row)
+
+    # Checkbox row
+    checkbox_row = arcade.gui.UIBoxLayout(vertical=False, space_between=5)
+
+    # Fight checkbox with label
+    fight_box = arcade.gui.UIBoxLayout(vertical=False, space_between=3)
+    fight_checkbox = arcade.gui.UITextureToggle(
+        on_texture=TEX_CHECKBOX_CHECKED,
+        off_texture=TEX_CHECKBOX_UNCHECKED,
+        width=20,
+        height=20,
+        value=fight_default,
+    )
+    fight_box.add(fight_checkbox)
+    fight_box.add(arcade.gui.UILabel(text="fight", font_size=10, text_color=arcade.color.WHITE))
+    checkbox_row.add(fight_box)
+
+    # Flee checkbox with label
+    flee_box = arcade.gui.UIBoxLayout(vertical=False, space_between=3)
+    flee_checkbox = arcade.gui.UITextureToggle(
+        on_texture=TEX_CHECKBOX_CHECKED,
+        off_texture=TEX_CHECKBOX_UNCHECKED,
+        width=20,
+        height=20,
+        value=flee_default,
+    )
+    flee_box.add(flee_checkbox)
+    flee_box.add(arcade.gui.UILabel(text="flee", font_size=10, text_color=arcade.color.WHITE))
+    checkbox_row.add(flee_box)
+
+    # Forage checkbox with label
+    forage_box = arcade.gui.UIBoxLayout(vertical=False, space_between=3)
+    forage_checkbox = arcade.gui.UITextureToggle(
+        on_texture=TEX_CHECKBOX_CHECKED,
+        off_texture=TEX_CHECKBOX_UNCHECKED,
+        width=20,
+        height=20,
+        value=True,
+    )
+    forage_box.add(forage_checkbox)
+    forage_box.add(arcade.gui.UILabel(text="forage", font_size=10, text_color=arcade.color.WHITE))
+    checkbox_row.add(forage_box)
+
+    # Come back checkbox with label
+    come_back_box = arcade.gui.UIBoxLayout(vertical=False, space_between=3)
+    come_back_checkbox = arcade.gui.UITextureToggle(
+        on_texture=TEX_CHECKBOX_CHECKED,
+        off_texture=TEX_CHECKBOX_UNCHECKED,
+        width=20,
+        height=20,
+        value=True,
+    )
+    come_back_box.add(come_back_checkbox)
+    come_back_box.add(arcade.gui.UILabel(text="come back", font_size=10, text_color=arcade.color.WHITE))
+    checkbox_row.add(come_back_box)
+
+    main_box.add(checkbox_row)
+
+    # Position the main box
+    container.add(
+        main_box,
+        anchor_x="left",
+        anchor_y="bottom",
+        align_x=offset_x,
+        align_y=arcade_plan_y,
+    )
+
+    return PlanControls(
+        container=container,
+        text_area=text_area,
+        issue_plan_btn=issue_plan_btn,
+        clear_plan_btn=clear_plan_btn,
+        selection_label=selection_label,
+        fight_checkbox=fight_checkbox,
+        flee_checkbox=flee_checkbox,
+        forage_checkbox=forage_checkbox,
+        come_back_checkbox=come_back_checkbox,
+    )
+
+
 class AntGameWindow(arcade.Window):
     """Main window for the Ant RTS game."""
 
@@ -654,13 +797,11 @@ class AntGameWindow(arcade.Window):
             view = self.game_ctx.views[team]
             plan_offset_x = self.game_ctx.team_offsets[team]
 
-            # Plan area layout (moved down to avoid overlapping disposition buttons)
-            plan_y = self.game_ctx.slider_y + 55
-            arcade_plan_y = self.height - plan_y
+            # Plan area layout
             plan_box_width = self.game_ctx.map_pixel_size
-            plan_box_height = 180
-            btn_y_offset = -plan_box_height - 5
-            selection_label_y = self.height - self.game_ctx.slider_y
+            plan_box_height = 150
+            # Position below the disposition buttons
+            arcade_plan_y = self.height - self.game_ctx.slider_y - 55 - plan_box_height - 60
 
             if view.selected_unit_id is not None:
                 # Get the selected unit from player knowledge
@@ -676,201 +817,117 @@ class AntGameWindow(arcade.Window):
                     view.selected_unit_id = None
                     view.working_plan = None
                     if view.plan_controls is not None:
-                        # Clean up plan controls
+                        # Remove from UI manager and clean up
+                        if self.game_ctx.ui_manager:
+                            self.game_ctx.ui_manager.remove(view.plan_controls.container)
                         view.plan_controls = None
                     continue
 
-                team_name = team.value
+                # Create plan controls if they don't exist
+                if view.plan_controls is None and view.working_plan is not None:
+                    view.plan_controls = create_plan_controls(
+                        team=team,
+                        unit_type=selected_unit.unit_type,
+                        offset_x=plan_offset_x,
+                        arcade_plan_y=arcade_plan_y,
+                        plan_box_width=plan_box_width,
+                        plan_box_height=plan_box_height,
+                    )
+                    # Add to UI manager
+                    if self.game_ctx.ui_manager:
+                        self.game_ctx.ui_manager.add(view.plan_controls.container)
 
-                # Display the working plan
-                if view.working_plan is not None:
+                    # Set up event handlers for this team's plan controls
+                    self._setup_plan_control_handlers(team, view)
+
+                # Update plan text in the text area
+                if view.working_plan is not None and view.plan_controls is not None:
                     plan_lines = format_plan(view.working_plan, selected_unit)
                     plan_text = "\n".join(plan_lines)
-
-                    # Draw selection label
-                    label_text = f"Selected: {team_name} unit - click {team_name}'s map to add waypoints"
-                    arcade.draw_text(
-                        label_text,
-                        plan_offset_x,
-                        selection_label_y,
-                        arcade.color.WHITE,
-                        font_size=10,
-                    )
-
-                    # Draw plan text box background
-                    arcade.draw_lbwh_rectangle_filled(
-                        plan_offset_x,
-                        arcade_plan_y - plan_box_height,
-                        plan_box_width,
-                        plan_box_height,
-                        (40, 40, 40),
-                    )
-                    arcade.draw_lbwh_rectangle_outline(
-                        plan_offset_x,
-                        arcade_plan_y - plan_box_height,
-                        plan_box_width,
-                        plan_box_height,
-                        arcade.color.WHITE,
-                        2
-                    )
-
-                    # Draw plan text
-                    arcade.draw_text(
-                        plan_text,
-                        plan_offset_x + 5,
-                        arcade_plan_y - 20,
-                        arcade.color.WHITE,
-                        font_size=10,
-                        multiline=True,
-                        width=plan_box_width - 10,
-                    )
-
-                    # Draw buttons
-                    btn_y = arcade_plan_y + btn_y_offset - 5
-
-                    # Issue Plan button
-                    has_orders = view.working_plan and view.working_plan.orders
-                    issue_btn_color = arcade.color.GREEN if has_orders else arcade.color.GRAY
-                    arcade.draw_lbwh_rectangle_filled(
-                        plan_offset_x,
-                        btn_y,
-                        80,
-                        20,
-                        issue_btn_color,
-                    )
-                    arcade.draw_text(
-                        "Issue Plan",
-                        plan_offset_x + 5,
-                        btn_y + 5,
-                        arcade.color.BLACK,
-                        font_size=10,
-                    )
-
-                    # Clear button
-                    arcade.draw_lbwh_rectangle_filled(
-                        plan_offset_x + 90,
-                        btn_y,
-                        60,
-                        20,
-                        arcade.color.RED,
-                    )
-                    arcade.draw_text(
-                        "Clear",
-                        plan_offset_x + 100,
-                        btn_y + 5,
-                        arcade.color.BLACK,
-                        font_size=10,
-                    )
-
-                    # Initialize or update plan controls
-                    if view.plan_controls is None:
-                        # First time creating plan controls - initialize checkboxes based on unit type
-                        if selected_unit.unit_type == UnitType.SCOUT:
-                            default_checkboxes = {"fight": False, "flee": True, "forage": True, "come_back": True}
-                        else:  # FIGHTER
-                            default_checkboxes = {"fight": True, "flee": False, "forage": True, "come_back": True}
-
-                        view.plan_controls = PlanControls(
-                            text_area=None,
-                            last_plan_text=plan_text,
-                            issue_plan_btn=None,
-                            clear_plan_btn=None,
-                            selection_label=None,
-                            fight_checkbox=None,
-                            flee_checkbox=None,
-                            forage_checkbox=None,
-                            come_back_checkbox=None,
-                            checkbox_states=default_checkboxes,
-                        )
-                    else:
-                        # Update plan text while preserving checkbox states
-                        view.plan_controls.last_plan_text = plan_text
-
-                    # Draw interrupt checkboxes
-                    checkbox_y = btn_y - 25
-                    checkbox_width = 80
-                    checkbox_spacing = 90
-
-                    # Fight checkbox
-                    fight_checked = view.plan_controls.checkbox_states.get("fight", True)
-                    fight_color = (60, 100, 60) if fight_checked else (60, 60, 60)
-                    arcade.draw_lbwh_rectangle_filled(
-                        plan_offset_x,
-                        checkbox_y,
-                        checkbox_width,
-                        20,
-                        fight_color,
-                    )
-                    arcade.draw_text(
-                        f"{"☑" if fight_checked else "☐"} fight",
-                        plan_offset_x + 5,
-                        checkbox_y + 5,
-                        arcade.color.WHITE,
-                        font_size=10,
-                    )
-
-                    # Flee checkbox
-                    flee_checked = view.plan_controls.checkbox_states.get("flee", True)
-                    flee_color = (60, 100, 60) if flee_checked else (60, 60, 60)
-                    arcade.draw_lbwh_rectangle_filled(
-                        plan_offset_x + checkbox_spacing,
-                        checkbox_y,
-                        checkbox_width,
-                        20,
-                        flee_color,
-                    )
-                    arcade.draw_text(
-                        f"{"☑" if flee_checked else "☐"} flee",
-                        plan_offset_x + checkbox_spacing + 5,
-                        checkbox_y + 5,
-                        arcade.color.WHITE,
-                        font_size=10,
-                    )
-
-                    # Forage checkbox
-                    forage_checked = view.plan_controls.checkbox_states.get("forage", True)
-                    forage_color = (60, 100, 60) if forage_checked else (60, 60, 60)
-                    arcade.draw_lbwh_rectangle_filled(
-                        plan_offset_x + checkbox_spacing * 2,
-                        checkbox_y,
-                        checkbox_width,
-                        20,
-                        forage_color,
-                    )
-                    arcade.draw_text(
-                        f"{"☑" if forage_checked else "☐"} forage",
-                        plan_offset_x + checkbox_spacing * 2 + 5,
-                        checkbox_y + 5,
-                        arcade.color.WHITE,
-                        font_size=10,
-                    )
-
-                    # Come back checkbox
-                    come_back_checked = view.plan_controls.checkbox_states.get("come_back", True)
-                    come_back_color = (60, 100, 60) if come_back_checked else (60, 60, 60)
-                    arcade.draw_lbwh_rectangle_filled(
-                        plan_offset_x + checkbox_spacing * 3,
-                        checkbox_y,
-                        checkbox_width,
-                        20,
-                        come_back_color,
-                    )
-                    arcade.draw_text(
-                        f"{"☑" if come_back_checked else "☐"} come back",
-                        plan_offset_x + checkbox_spacing * 3 + 5,
-                        checkbox_y + 5,
-                        arcade.color.WHITE,
-                        font_size=10,
-                    )
+                    view.plan_controls.text_area.text = plan_text
 
             else:
                 # No selected unit for this team, clean up plan controls if they exist
                 if view.plan_controls is not None:
+                    if self.game_ctx.ui_manager:
+                        self.game_ctx.ui_manager.remove(view.plan_controls.container)
                     view.plan_controls = None
 
         # Draw UI manager
         if self.game_ctx.ui_manager:
             self.game_ctx.ui_manager.draw()
+
+    def _setup_plan_control_handlers(self, team: Team, view: PlayerView) -> None:
+        """Set up event handlers for plan control widgets."""
+        if view.plan_controls is None:
+            return
+
+        controls = view.plan_controls
+
+        @controls.issue_plan_btn.event("on_click")
+        def on_issue_plan_click(event: Any) -> None:
+            if view.working_plan and view.working_plan.orders and view.selected_unit_id:
+                self.game_ctx.client.set_unit_plan(
+                    team, view.selected_unit_id, view.working_plan
+                )
+                # Clear selection after issuing plan
+                view.selected_unit_id = None
+                view.working_plan = None
+                if view.plan_controls is not None and self.game_ctx.ui_manager:
+                    self.game_ctx.ui_manager.remove(view.plan_controls.container)
+                view.plan_controls = None
+
+        @controls.clear_plan_btn.event("on_click")
+        def on_clear_plan_click(event: Any) -> None:
+            if view.selected_unit_id:
+                # Get unit type for proper defaults
+                knowledge = self.game_ctx.client.get_player_knowledge(
+                    team, self.game_ctx.client.get_current_tick()
+                )
+                unit_type = UnitType.FIGHTER
+                if view.selected_unit_id in knowledge.last_seen:
+                    _, selected_unit = knowledge.last_seen[view.selected_unit_id]
+                    unit_type = selected_unit.unit_type
+
+                # Reset working plan with default interrupts
+                view.working_plan = Plan(interrupts=make_initial_working_plan_interrupts(unit_type))
+
+                # Reset checkbox states to defaults
+                if view.plan_controls:
+                    if unit_type == UnitType.SCOUT:
+                        view.plan_controls.fight_checkbox.value = False
+                        view.plan_controls.flee_checkbox.value = True
+                    else:
+                        view.plan_controls.fight_checkbox.value = True
+                        view.plan_controls.flee_checkbox.value = False
+                    view.plan_controls.forage_checkbox.value = True
+                    view.plan_controls.come_back_checkbox.value = True
+
+        def update_interrupts_from_checkboxes() -> None:
+            """Update working plan interrupts based on checkbox states."""
+            if view.working_plan and view.plan_controls:
+                view.working_plan.interrupts = make_interrupts_from_checkboxes(
+                    fight=view.plan_controls.fight_checkbox.value,
+                    flee=view.plan_controls.flee_checkbox.value,
+                    forage=view.plan_controls.forage_checkbox.value,
+                    come_back=view.plan_controls.come_back_checkbox.value,
+                )
+
+        @controls.fight_checkbox.event("on_change")
+        def on_fight_change(event: Any) -> None:
+            update_interrupts_from_checkboxes()
+
+        @controls.flee_checkbox.event("on_change")
+        def on_flee_change(event: Any) -> None:
+            update_interrupts_from_checkboxes()
+
+        @controls.forage_checkbox.event("on_change")
+        def on_forage_change(event: Any) -> None:
+            update_interrupts_from_checkboxes()
+
+        @controls.come_back_checkbox.event("on_change")
+        def on_come_back_change(event: Any) -> None:
+            update_interrupts_from_checkboxes()
 
     def on_update(self, delta_time: float) -> None:
         """Update game state."""
@@ -906,119 +963,7 @@ class AntGameWindow(arcade.Window):
         if button != arcade.MOUSE_BUTTON_LEFT:
             return
 
-        # Check for plan control button clicks first
-        for team in Team:
-            view = self.game_ctx.views[team]
-            if view.selected_unit_id is not None and view.working_plan is not None:
-                plan_offset_x = self.game_ctx.team_offsets[team]
-                plan_y = self.game_ctx.slider_y + 55
-                arcade_plan_y = self.height - plan_y
-                plan_box_height = 180
-                btn_y_offset = -plan_box_height - 5
-                btn_y = arcade_plan_y + btn_y_offset - 5
-
-                # Check Issue Plan button (80x20 at plan_offset_x, btn_y)
-                if (plan_offset_x <= x <= plan_offset_x + 80 and
-                    btn_y <= y <= btn_y + 20):
-                    # Issue plan button clicked
-                    if view.working_plan.orders:
-                        self.game_ctx.client.set_unit_plan(
-                            team, view.selected_unit_id, view.working_plan
-                        )
-                        view.selected_unit_id = None
-                        view.working_plan = None
-                        view.plan_controls = None
-                    return
-
-                # Check Clear button (60x20 at plan_offset_x + 90, btn_y)
-                if (plan_offset_x + 90 <= x <= plan_offset_x + 150 and
-                    btn_y <= y <= btn_y + 20):
-                    # Clear button clicked - get unit type for proper defaults
-                    knowledge = self.game_ctx.client.get_player_knowledge(
-                        team, self.game_ctx.client.get_current_tick()
-                    )
-                    unit_type = UnitType.FIGHTER  # default
-                    if view.selected_unit_id in knowledge.last_seen:
-                        _, selected_unit = knowledge.last_seen[view.selected_unit_id]
-                        unit_type = selected_unit.unit_type
-
-                    view.working_plan = Plan(interrupts=make_initial_working_plan_interrupts(unit_type))
-                    # Reset checkboxes to default states based on unit type
-                    if view.plan_controls:
-                        if unit_type == UnitType.SCOUT:
-                            view.plan_controls.checkbox_states = {
-                                "fight": False, "flee": True, "forage": True, "come_back": True
-                            }
-                        else:  # FIGHTER
-                            view.plan_controls.checkbox_states = {
-                                "fight": True, "flee": False, "forage": True, "come_back": True
-                            }
-                    return
-
-                # Check checkbox clicks (80x20 each, positioned below buttons)
-                checkbox_y = btn_y - 25
-                checkbox_width = 80
-                checkbox_spacing = 90
-
-                # Fight checkbox
-                if (plan_offset_x <= x <= plan_offset_x + checkbox_width and
-                    checkbox_y <= y <= checkbox_y + 20):
-                    if view.plan_controls and view.working_plan:
-                        current = view.plan_controls.checkbox_states.get("fight", True)
-                        view.plan_controls.checkbox_states["fight"] = not current
-                        # Update working plan interrupts
-                        view.working_plan.interrupts = make_interrupts_from_checkboxes(
-                            fight=view.plan_controls.checkbox_states["fight"],
-                            flee=view.plan_controls.checkbox_states["flee"],
-                            forage=view.plan_controls.checkbox_states["forage"],
-                            come_back=view.plan_controls.checkbox_states["come_back"],
-                        )
-                    return
-
-                # Flee checkbox
-                if (plan_offset_x + checkbox_spacing <= x <= plan_offset_x + checkbox_spacing + checkbox_width and
-                    checkbox_y <= y <= checkbox_y + 20):
-                    if view.plan_controls and view.working_plan:
-                        current = view.plan_controls.checkbox_states.get("flee", True)
-                        view.plan_controls.checkbox_states["flee"] = not current
-                        # Update working plan interrupts
-                        view.working_plan.interrupts = make_interrupts_from_checkboxes(
-                            fight=view.plan_controls.checkbox_states["fight"],
-                            flee=view.plan_controls.checkbox_states["flee"],
-                            forage=view.plan_controls.checkbox_states["forage"],
-                            come_back=view.plan_controls.checkbox_states["come_back"],
-                        )
-                    return
-
-                # Forage checkbox
-                if (plan_offset_x + checkbox_spacing * 2 <= x <= plan_offset_x + checkbox_spacing * 2 + checkbox_width and
-                    checkbox_y <= y <= checkbox_y + 20):
-                    if view.plan_controls and view.working_plan:
-                        current = view.plan_controls.checkbox_states.get("forage", True)
-                        view.plan_controls.checkbox_states["forage"] = not current
-                        # Update working plan interrupts
-                        view.working_plan.interrupts = make_interrupts_from_checkboxes(
-                            fight=view.plan_controls.checkbox_states["fight"],
-                            flee=view.plan_controls.checkbox_states["flee"],
-                            forage=view.plan_controls.checkbox_states["forage"],
-                            come_back=view.plan_controls.checkbox_states["come_back"],
-                        )
-                    return
-
-                # Come back checkbox
-                if (plan_offset_x + checkbox_spacing * 3 <= x <= plan_offset_x + checkbox_spacing * 3 + checkbox_width and
-                    checkbox_y <= y <= checkbox_y + 20):
-                    if view.plan_controls and view.working_plan:
-                        current = view.plan_controls.checkbox_states.get("come_back", True)
-                        view.plan_controls.checkbox_states["come_back"] = not current
-                        # Update working plan interrupts
-                        view.working_plan.interrupts = make_interrupts_from_checkboxes(
-                            fight=view.plan_controls.checkbox_states["fight"],
-                            flee=view.plan_controls.checkbox_states["flee"],
-                            forage=view.plan_controls.checkbox_states["forage"],
-                            come_back=view.plan_controls.checkbox_states["come_back"],
-                        )
-                    return
+        # Plan control button/checkbox clicks are handled by UIManager event handlers
 
         for team in Team:
             view = self.game_ctx.views[team]
