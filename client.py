@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
-from typing import Optional, Any
+from dataclasses import dataclass, field
+from typing import Optional, Any, cast
 import json
 import requests
 import time
 
 from core import Pos, Region, Timestamp
-from mechanics import Team, GameState, Plan, UnitId, UnitType
 from knowledge import PlayerKnowledge
+from mechanics import GameState, PlayerAction, Team, UnitId, UnitType
+from planning import Plan, PlanningMind
 
 
 class GameClient(ABC):
@@ -26,16 +27,7 @@ class GameClient(ABC):
         pass
 
     @abstractmethod
-    def set_unit_plan(self, team: Team, unit_id: UnitId, plan: Plan) -> None:
-        """Set a unit's plan (if it's in that team's base)."""
-        pass
-
-    @abstractmethod
-    def spawn_unit(self, team: Team, unit_type: UnitType) -> bool:
-        """Spawn a unit of the given type for the given team, consuming food from the base.
-
-        Returns True if successful, False if no food or no space available.
-        """
+    def add_player_action(self, team: Team, action: PlayerAction) -> None:
         pass
 
     @abstractmethod
@@ -76,18 +68,15 @@ class LocalClient(GameClient):
 
     state: GameState
     knowledge: dict[Team, PlayerKnowledge]
+    queued_player_actions: dict[Team, list[PlayerAction]] = field(default_factory=dict)
 
     def get_player_knowledge(self, team: Team, tick: Timestamp) -> PlayerKnowledge:
-        while self.state.tick < tick:
+        while self.state.now < tick:
             time.sleep(0.03)
         return self.knowledge[team]
 
-    def set_unit_plan(self, team: Team, unit_id: UnitId, plan: Plan) -> None:
-        # LocalClient has direct access, so just call the method
-        self.state.set_unit_plan(unit_id, plan)
-
-    def spawn_unit(self, team: Team, unit_type: UnitType) -> bool:
-        return self.state.spawn_unit(team, unit_type) is not None
+    def add_player_action(self, team: Team, action: PlayerAction) -> None:
+        self.queued_player_actions.setdefault(team, []).append(action)
 
     def get_food_count_in_base(self, team: Team) -> int:
         return self.state.get_food_count_in_base(team)
@@ -96,7 +85,7 @@ class LocalClient(GameClient):
         return self.state.base_regions[team]
 
     def get_current_tick(self) -> Timestamp:
-        return self.state.tick
+        return self.state.now
 
     def get_god_view(self) -> Optional[GameState]:
         return self.state
@@ -104,6 +93,21 @@ class LocalClient(GameClient):
     def get_available_teams(self) -> list[Team]:
         return list(Team)
 
+    def flush_queued_actions(self) -> None:
+        self.state.apply_player_actions(self.queued_player_actions)
+        self.queued_player_actions.clear()
+        self._let_all_players_observe()
+
+    def tick_game(self) -> None:
+        self.state.tick()
+        self._let_all_players_observe()
+
+    def _let_all_players_observe(self) -> None:
+        for team, knowledge in self.knowledge.items():
+            knowledge.observe(self.state.now, [
+                u for u in self.state.units.values()
+                if u.team == team and u.is_in_base(self.state)
+            ])
 
 @dataclass
 class RemoteClient(GameClient):

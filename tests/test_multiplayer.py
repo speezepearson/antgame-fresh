@@ -252,7 +252,7 @@ class TestSerialization:
         knowledge.all_observations = {
             Timestamp(0): {Pos(0, 0): [Empty()]},
         }
-        knowledge.last_seen = {
+        knowledge.last_in_base = {
             UnitId(1): (
                 Timestamp(3),
                 Unit(
@@ -285,7 +285,7 @@ class TestSerialization:
         assert deserialized.grid_height == knowledge.grid_height
         assert deserialized.tick == knowledge.tick
         assert Timestamp(0) in deserialized.all_observations
-        assert UnitId(1) in deserialized.last_seen
+        assert UnitId(1) in deserialized.last_in_base
         assert UnitId(2) in deserialized.expected_trajectories
         assert Pos(1, 1) in deserialized.last_observations
 
@@ -300,8 +300,8 @@ class TestLocalClient:
         """Create a LocalClient with test game state."""
         state = make_game(grid_width=16, grid_height=16)
         knowledge = {
-            Team.RED: PlayerKnowledge(Team.RED, 16, 16, state.tick),
-            Team.BLUE: PlayerKnowledge(Team.BLUE, 16, 16, state.tick),
+            Team.RED: PlayerKnowledge(Team.RED, 16, 16, state.now),
+            Team.BLUE: PlayerKnowledge(Team.BLUE, 16, 16, state.now),
         }
         return LocalClient(state=state, knowledge=knowledge), state, knowledge
 
@@ -309,8 +309,8 @@ class TestLocalClient:
         """Test LocalClient returns correct player knowledge."""
         client, state, knowledge = self._make_client()
 
-        assert client.get_player_knowledge(Team.RED, tick=state.tick) == knowledge[Team.RED]
-        assert client.get_player_knowledge(Team.BLUE, tick=state.tick) == knowledge[Team.BLUE]
+        assert client.get_player_knowledge(Team.RED, tick=state.now) == knowledge[Team.RED]
+        assert client.get_player_knowledge(Team.BLUE, tick=state.now) == knowledge[Team.BLUE]
 
     def test_sets_unit_plan(self):
         """Test LocalClient can set unit plans."""
@@ -339,7 +339,7 @@ class TestLocalClient:
         """Test LocalClient returns current tick."""
         client, state, knowledge = self._make_client()
 
-        assert client.get_current_tick() == state.tick
+        assert client.get_current_tick() == state.now
 
     def test_tick_updates_after_game_advances(self):
         """Test LocalClient tick updates when game advances."""
@@ -348,7 +348,7 @@ class TestLocalClient:
 
         tick_game(state)
 
-        assert client.get_current_tick() == state.tick
+        assert client.get_current_tick() == state.now
         assert client.get_current_tick() > initial_tick
 
     def test_returns_god_view(self):
@@ -377,8 +377,8 @@ class TestGameServer:
         """Create a test aiohttp app with game state."""
         state = make_game(grid_width=16, grid_height=16)
         knowledge = {
-            Team.RED: PlayerKnowledge(Team.RED, 16, 16, state.tick),
-            Team.BLUE: PlayerKnowledge(Team.BLUE, 16, 16, state.tick),
+            Team.RED: PlayerKnowledge(Team.RED, 16, 16, state.now),
+            Team.BLUE: PlayerKnowledge(Team.BLUE, 16, 16, state.now),
         }
 
         # Initialize knowledge with base observations
@@ -534,8 +534,8 @@ def running_server() -> Iterator[RunningServerFixture]:
 
     state = make_game(grid_width=16, grid_height=16)
     knowledge = {
-        Team.RED: PlayerKnowledge(Team.RED, 16, 16, state.tick),
-        Team.BLUE: PlayerKnowledge(Team.BLUE, 16, 16, state.tick),
+        Team.RED: PlayerKnowledge(Team.RED, 16, 16, state.now),
+        Team.BLUE: PlayerKnowledge(Team.BLUE, 16, 16, state.now),
     }
 
     # Initialize knowledge with base observations
@@ -574,7 +574,7 @@ class TestRemoteClient:
 
         client = RemoteClient(url=f"http://localhost:{port}", team=Team.RED)
 
-        k = client.get_player_knowledge(Team.RED, tick=state.tick)
+        k = client.get_player_knowledge(Team.RED, tick=state.now)
         assert k.team == Team.RED
         assert k.grid_width == 16
         assert k.grid_height == 16
@@ -586,7 +586,7 @@ class TestRemoteClient:
         client = RemoteClient(url=f"http://localhost:{port}", team=Team.RED)
 
         with pytest.raises(ValueError, match="Can only view own team"):
-            client.get_player_knowledge(Team.BLUE, tick=state.tick)
+            client.get_player_knowledge(Team.BLUE, tick=state.now)
 
     def test_sets_unit_plan(self, running_server: RunningServerFixture) -> None:
         """Test RemoteClient can set unit plans."""
@@ -672,7 +672,7 @@ class TestRemoteClient:
         for k in knowledge.values():
             k.tick_knowledge(state)
 
-        updated_knowledge = client.get_player_knowledge(Team.RED, state.tick)
+        updated_knowledge = client.get_player_knowledge(Team.RED, state.now)
         assert updated_knowledge.tick > initial_tick
 
 
@@ -692,8 +692,8 @@ class TestClientServerIntegration:
         blue_client = RemoteClient(url=f"http://localhost:{port}", team=Team.BLUE)
 
         # Get initial knowledge
-        red_knowledge = red_client.get_player_knowledge(Team.RED, tick=state.tick)
-        blue_knowledge = blue_client.get_player_knowledge(Team.BLUE, tick=state.tick)
+        red_knowledge = red_client.get_player_knowledge(Team.RED, tick=state.now)
+        blue_knowledge = blue_client.get_player_knowledge(Team.BLUE, tick=state.now)
 
         assert red_knowledge.team == Team.RED
         assert blue_knowledge.team == Team.BLUE
@@ -723,8 +723,8 @@ class TestClientServerIntegration:
         red_client = RemoteClient(url=f"http://localhost:{port}", team=Team.RED)
         blue_client = RemoteClient(url=f"http://localhost:{port}", team=Team.BLUE)
 
-        red_knowledge = red_client.get_player_knowledge(Team.RED, tick=state.tick)
-        blue_knowledge = blue_client.get_player_knowledge(Team.BLUE, tick=state.tick)
+        red_knowledge = red_client.get_player_knowledge(Team.RED, tick=state.now)
+        blue_knowledge = blue_client.get_player_knowledge(Team.BLUE, tick=state.now)
 
         # Advance game
         tick_game(state)
@@ -732,8 +732,8 @@ class TestClientServerIntegration:
             k.tick_knowledge(state)
 
         # Fetch updated knowledge
-        updated_red = red_client.get_player_knowledge(Team.RED, tick=state.tick)
-        updated_blue = blue_client.get_player_knowledge(Team.BLUE, tick=state.tick)
+        updated_red = red_client.get_player_knowledge(Team.RED, tick=state.now)
+        updated_blue = blue_client.get_player_knowledge(Team.BLUE, tick=state.now)
 
         assert updated_red.tick > red_knowledge.tick
         assert updated_blue.tick > blue_knowledge.tick

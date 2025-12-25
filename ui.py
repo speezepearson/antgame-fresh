@@ -14,34 +14,22 @@ from core import Pos, Region, Timestamp
 from knowledge import PlayerKnowledge
 from client import GameClient, LocalClient, RemoteClient
 from mechanics import (
+    CreateUnitPlayerAction,
     Empty,
-    FoodInRangeCondition,
+    FoodConfig,
     FoodPresent,
     GameState,
-    IdleCondition,
-    MoveHomeAction,
-    MoveThereAction,
-    ResumeAction,
+    PlayerAction,
     Team,
     BasePresent,
     UnitPresent,
     GRID_SIZE,
-    Move,
-    Plan,
     make_game,
-    tick_game,
     Unit,
     UnitId,
     UnitType,
-    Order,
-    Condition,
-    Action,
-    Interrupt,
-    EnemyInRangeCondition,
-    BaseVisibleCondition,
-    PositionReachedCondition,
-    FoodConfig,
 )
+from planning import EnemyInRangeCondition, FoodInRangeCondition, IdleCondition, Interrupt, Move, MoveHomeAction, MoveThereAction, Plan, PlanningMind, ResumeAction, SetUnitPlanPlayerAction
 
 
 # Rendering Constants
@@ -112,8 +100,8 @@ class GameContext:
     views_offset_y: int
     slider_y: int
     map_pixel_size: int
-    tick_interval: int
-    last_tick: float
+    seconds_per_tick: float
+    last_tick_at_sec: float
     start_time: float  # For get_ticks replacement
     ui_manager: arcade.gui.UIManager | None = None
 
@@ -352,7 +340,7 @@ def draw_player_view(
     freeze_frame = view.freeze_frame
     # Use current tick when live (freeze_frame is None), otherwise use freeze_frame
     view_t = view.knowledge.tick if freeze_frame is None else freeze_frame
-    logbook = view.knowledge.all_observations
+    logbook = view.knowledge.logbook.observation_log
 
     map_pixel_width = view.knowledge.grid_width * TILE_SIZE
     map_pixel_height = view.knowledge.grid_height * TILE_SIZE
@@ -366,7 +354,7 @@ def draw_player_view(
     cur_observations = logbook.get(view_t, {})
 
     # Draw cells with gradient tinting based on observation age
-    for pos, (last_observed_tick, _) in view.knowledge.last_observations.items():
+    for pos, (last_observed_tick, _) in view.knowledge.logbook.last_observations_by_pos.items():
         age = view_t - last_observed_tick
         # Exponential decay: 80 * 2^-(age/50)
         brightness = int(80 * (2 ** (-(age / CELL_BRIGHTNESS_HALFLIFE))))
@@ -392,7 +380,7 @@ def draw_player_view(
     )
 
     if freeze_frame is None:
-        for pos, (t, contents_list) in view.knowledge.last_observations.items():
+        for pos, (t, contents_list) in view.knowledge.logbook.last_observations_by_pos.items():
             if freeze_frame is not None and t != view.knowledge.tick:
                 continue
             for contents in sorted(
@@ -408,6 +396,9 @@ def draw_player_view(
                         window_height,
                     )
                 elif isinstance(contents, UnitPresent):
+                    if pos not in cur_observations and contents.team == team:
+                        # we should be showing the expected trajectory for our own units
+                        continue
                     draw_unit_at(
                         contents.team,
                         pos,
@@ -427,7 +418,7 @@ def draw_player_view(
                     )
 
     else:
-        for pos, contents_list in view.knowledge.all_observations.get(
+        for pos, contents_list in view.knowledge.logbook.observation_log.get(
             freeze_frame, {}
         ).items():
             for contents in sorted(
@@ -462,21 +453,14 @@ def draw_player_view(
                     )
 
     # Draw predicted positions for units with expected trajectories
-    for trajectory in view.knowledge.expected_trajectories.values():
-        # Calculate which position in trajectory corresponds to view_t
-        trajectory_index = view_t - trajectory.start_tick
-        if 0 <= trajectory_index:
-            predicted_pos = trajectory.positions[
-                min(trajectory_index, len(trajectory.positions) - 1)
-            ]
-            # Get unit type from last_seen
-            unit_type = UnitType.FIGHTER
-            if trajectory.unit_id in view.knowledge.last_seen:
-                _, unit = view.knowledge.last_seen[trajectory.unit_id]
-                unit_type = unit.unit_type
-            draw_unit_at(
-                team, predicted_pos, offset_x, offset_y, window_height, outline_only=True, unit_type=unit_type
-            )
+    for unit_id, trajectory in view.knowledge.expected_trajectories.items():
+        predicted_pos = trajectory.get(view_t)
+        if predicted_pos is None:
+            continue
+        unit_type = view.knowledge.last_in_base[unit_id][1].unit_type
+        draw_unit_at(
+            team, predicted_pos, offset_x, offset_y, window_height, outline_only=True, unit_type=unit_type
+        )
 
 
 def screen_to_grid(
@@ -500,16 +484,25 @@ def screen_to_grid(
     return None
 
 
-def find_unit_at_base(client: GameClient, pos: Pos, team: Team) -> Unit | None:
+def find_unit_at_base(client: GameClient, pos: Pos, team: Team) -> UnitPresent | None:
     """Find a unit of the given team at pos, only if inside their base region."""
-    base_region = client.get_base_region(team)
-    knowledge = client.get_player_knowledge(team, client.get_current_tick())
+    if pos not in client.get_base_region(team).cells:
+        return None
 
-    # Check units we know about from our observations
-    for unit_id, (timestamp, unit) in knowledge.last_seen.items():
-        if unit.team == team and unit.pos == pos:
-            if base_region.contains(unit.pos):
-                return unit
+    now = client.get_current_tick()
+    knowledge = client.get_player_knowledge(team, now)
+
+    last_info = knowledge.logbook.last_observations_by_pos.get(pos)
+    print('last_info:', last_info, 'at', now)
+    if last_info is None:
+        return None
+    last_observed_t, last_observed_contents = last_info
+    if last_observed_t < now - 2:
+        return None
+    for contents in last_observed_contents:
+        if isinstance(contents, UnitPresent) and contents.team == team:
+            print('got one')
+            return contents
 
     return None
 
@@ -718,15 +711,14 @@ class AntGameWindow(arcade.Window):
     def __init__(self, ctx: GameContext, window_width: int, window_height: int):
         super().__init__(window_width, window_height, "Ant RTS")
         self.game_ctx = ctx
-        self.start_time = time.time()
-        self.game_ctx.start_time = self.start_time
+        self.start_at = time.time()
+        self.game_ctx.start_time = self.start_at
 
         # Set update rate to 60 FPS
         self.set_update_rate(1/60)
 
-    def get_ticks(self) -> float:
-        """Get milliseconds since window creation (pygame.time.get_ticks replacement)."""
-        return (time.time() - self.start_time) * 1000
+    def get_elapsed_secs(self) -> float:
+        return (time.time() - self.start_at)
 
     def on_draw(self) -> None:
         """Render the game."""
@@ -812,9 +804,7 @@ class AntGameWindow(arcade.Window):
                 knowledge = self.game_ctx.client.get_player_knowledge(
                     team, self.game_ctx.client.get_current_tick()
                 )
-                selected_unit = None
-                if view.selected_unit_id in knowledge.last_seen:
-                    _, selected_unit = knowledge.last_seen[view.selected_unit_id]
+                selected_unit = knowledge.own_units_in_base.get(view.selected_unit_id)
 
                 if selected_unit is None:
                     # Unit no longer exists in our knowledge, clear selection
@@ -871,9 +861,10 @@ class AntGameWindow(arcade.Window):
         @controls.issue_plan_btn.event("on_click")
         def on_issue_plan_click(event: Any) -> None:
             if view.working_plan and view.working_plan.orders and view.selected_unit_id:
-                self.game_ctx.client.set_unit_plan(
-                    team, view.selected_unit_id, view.working_plan
-                )
+                self.game_ctx.client.add_player_action(team, SetUnitPlanPlayerAction(
+                    unit_id=view.selected_unit_id,
+                    plan=view.working_plan,
+                ))
                 # Clear selection after issuing plan
                 view.selected_unit_id = None
                 view.working_plan = None
@@ -889,8 +880,8 @@ class AntGameWindow(arcade.Window):
                     team, self.game_ctx.client.get_current_tick()
                 )
                 unit_type = UnitType.FIGHTER
-                if view.selected_unit_id in knowledge.last_seen:
-                    _, selected_unit = knowledge.last_seen[view.selected_unit_id]
+                if view.selected_unit_id in knowledge.last_in_base:
+                    _, selected_unit = knowledge.last_in_base[view.selected_unit_id]
                     unit_type = selected_unit.unit_type
 
                 # Reset working plan with default interrupts
@@ -937,19 +928,18 @@ class AntGameWindow(arcade.Window):
         """Update game state."""
         # Tick game if appropriate (only in local/server mode)
         if isinstance(self.game_ctx.client, LocalClient):
-            current_time = self.get_ticks()
-            if current_time - self.game_ctx.last_tick >= self.game_ctx.tick_interval:
-                tick_game(self.game_ctx.client.state)
-                for team, knowledge in self.game_ctx.client.knowledge.items():
-                    knowledge.tick_knowledge(self.game_ctx.client.state)
-                self.game_ctx.last_tick = current_time
+            current_elapsed_sec = self.get_elapsed_secs()
+            if current_elapsed_sec - self.game_ctx.last_tick_at_sec >= self.game_ctx.seconds_per_tick:
+                self.game_ctx.client.flush_queued_actions()
+                self.game_ctx.client.tick_game()
+                self.game_ctx.last_tick_at_sec = current_elapsed_sec
         elif isinstance(self.game_ctx.client, RemoteClient):
-            current_time = self.get_ticks()
-            if current_time - self.game_ctx.last_tick >= self.game_ctx.tick_interval:
+            current_elapsed_sec = self.get_elapsed_secs()
+            if current_elapsed_sec - self.game_ctx.last_tick_at_sec >= self.game_ctx.seconds_per_tick:
                 self.game_ctx.views[self.game_ctx.client.team].knowledge = self.game_ctx.client.get_player_knowledge(
                     self.game_ctx.client.team, self.game_ctx.client.get_current_tick() + 1
                 )
-                self.game_ctx.last_tick = current_time
+                self.game_ctx.last_tick_at_sec = current_elapsed_sec
         else:
             raise ValueError(f"Unknown client type: {type(self.game_ctx.client)}")
 
@@ -963,7 +953,6 @@ class AntGameWindow(arcade.Window):
         if self.game_ctx.ui_manager and self.game_ctx.ui_manager.on_mouse_press(x, y, button, modifiers):
             return
 
-        # Only handle left clicks
         if button != arcade.MOUSE_BUTTON_LEFT:
             return
 
@@ -985,14 +974,14 @@ class AntGameWindow(arcade.Window):
             # Only allow interaction when viewing live (not a freeze frame)
             if grid_pos is not None and view.freeze_frame is None:
                 # Detect double-click (within 300ms at same position)
-                current_time = self.get_ticks()
+                current_elapsed_millis = self.get_elapsed_secs()
                 is_double_click = (
                     view.last_click_pos == grid_pos
-                    and current_time - view.last_click_time < 300
+                    and current_elapsed_millis - view.last_click_time < 300
                 )
 
                 # Update last click tracking
-                view.last_click_time = current_time
+                view.last_click_time = current_elapsed_millis
                 view.last_click_pos = grid_pos
 
                 if is_double_click and view.selected_unit_id is not None:
@@ -1001,9 +990,10 @@ class AntGameWindow(arcade.Window):
                         view.working_plan is not None
                         and view.working_plan.orders
                     ):
-                        self.game_ctx.client.set_unit_plan(
-                            team, view.selected_unit_id, view.working_plan
-                        )
+                        self.game_ctx.client.add_player_action(team, SetUnitPlanPlayerAction(
+                            unit_id=view.selected_unit_id,
+                            plan=view.working_plan,
+                        ))
                         view.selected_unit_id = None
                         view.working_plan = None
                         # Clean up plan controls
@@ -1017,8 +1007,8 @@ class AntGameWindow(arcade.Window):
                             team, self.game_ctx.client.get_current_tick()
                         )
                         unit_type = UnitType.FIGHTER  # default
-                        if view.selected_unit_id in knowledge.last_seen:
-                            _, selected_unit = knowledge.last_seen[view.selected_unit_id]
+                        if view.selected_unit_id in knowledge.last_in_base:
+                            _, selected_unit = knowledge.last_in_base[view.selected_unit_id]
                             unit_type = selected_unit.unit_type
                         view.working_plan = Plan(
                             interrupts=make_initial_working_plan_interrupts(unit_type)
@@ -1026,13 +1016,16 @@ class AntGameWindow(arcade.Window):
                     view.working_plan.orders.append(Move(target=grid_pos))
                 else:
                     # Try to select a unit
-                    unit = find_unit_at_base(self.game_ctx.client, grid_pos, team)
-                    if unit is not None:
-                        view.selected_unit_id = unit.id
-                        # Initialize working plan when selecting a unit
-                        view.working_plan = Plan(
-                            interrupts=make_initial_working_plan_interrupts(unit.unit_type)
-                        )
+                    knowledge = self.game_ctx.client.get_player_knowledge(
+                        team, self.game_ctx.client.get_current_tick()
+                    )
+                    for unit_id, unit in knowledge.own_units_in_base.items():
+                        if unit.pos == grid_pos:
+                            view.selected_unit_id = unit_id
+                            view.working_plan = Plan(
+                                interrupts=make_initial_working_plan_interrupts(unit.unit_type)
+                            )
+                            break
 
 
 def initialize_game() -> tuple[GameContext, AntGameWindow]:
@@ -1125,6 +1118,7 @@ def initialize_game() -> tuple[GameContext, AntGameWindow]:
             max_prob=args.food_max_prob,
         )
         state = make_game(
+            make_mind=PlanningMind,
             grid_width=args.width, grid_height=args.height, food_config=food_config
         )
         grid_width = state.grid_width
@@ -1150,7 +1144,7 @@ def initialize_game() -> tuple[GameContext, AntGameWindow]:
         Team.BLUE: blue_offset_x,
     }
 
-    tick_interval = 200
+    seconds_per_tick = 1/5
     last_tick = 0.0
 
     # Create views and client based on mode
@@ -1197,7 +1191,7 @@ def initialize_game() -> tuple[GameContext, AntGameWindow]:
                 team=Team.RED,
                 grid_width=grid_width,
                 grid_height=grid_height,
-                tick=state.tick,
+                tick=state.now,
             ),
         )
         blue_view = PlayerView(
@@ -1205,7 +1199,7 @@ def initialize_game() -> tuple[GameContext, AntGameWindow]:
                 team=Team.BLUE,
                 grid_width=grid_width,
                 grid_height=grid_height,
-                tick=state.tick,
+                tick=state.now,
             ),
         )
 
@@ -1241,8 +1235,8 @@ def initialize_game() -> tuple[GameContext, AntGameWindow]:
         views_offset_y=views_offset_y,
         slider_y=slider_y,
         map_pixel_size=map_pixel_size,
-        tick_interval=tick_interval,
-        last_tick=last_tick,
+        seconds_per_tick=seconds_per_tick,
+        last_tick_at_sec=last_tick,
         start_time=0.0,  # Will be set by window
     )
 
@@ -1301,11 +1295,17 @@ def initialize_game() -> tuple[GameContext, AntGameWindow]:
 
         @fighter_btn.event("on_click")
         def on_fighter_click(event: Any) -> None:
-            ctx.client.spawn_unit(team, UnitType.FIGHTER)
+            ctx.client.add_player_action(team, CreateUnitPlayerAction(
+                mind=PlanningMind(),
+                unit_type=UnitType.FIGHTER,
+            ))
 
         @scout_btn.event("on_click")
         def on_scout_click(event: Any) -> None:
-            ctx.client.spawn_unit(team, UnitType.SCOUT)
+            ctx.client.add_player_action(team, CreateUnitPlayerAction(
+                mind=PlanningMind(),
+                unit_type=UnitType.SCOUT,
+            ))
 
         # Layout disposition buttons
         disposition_box = arcade.gui.UIBoxLayout(vertical=False, space_between=5)

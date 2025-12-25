@@ -314,7 +314,7 @@ def serialize_player_knowledge(knowledge: PlayerKnowledge) -> Dict[str, Any]:
                 "timestamp": timestamp,
                 "unit": serialize_unit(unit),
             }
-            for unit_id, (timestamp, unit) in knowledge.last_seen.items()
+            for unit_id, (timestamp, unit) in knowledge.last_in_base.items()
         },
         "expected_trajectories": {
             int(unit_id): serialize_expected_trajectory(trajectory)
@@ -340,7 +340,7 @@ def deserialize_player_knowledge(data: Dict[str, Any]) -> PlayerKnowledge:
 
     knowledge.all_observations = deserialize_observation_log(data["all_observations"])
 
-    knowledge.last_seen = {
+    knowledge.last_in_base = {
         UnitId(int(unit_id_str)): (
             Timestamp(value["timestamp"]),
             deserialize_unit(value["unit"]),

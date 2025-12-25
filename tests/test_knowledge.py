@@ -135,12 +135,12 @@ class TestComputeExpectedTrajectory:
         unit = make_unit(Team.RED, Pos(5, 5))
         unit.plan = Plan(orders=[Move(target=Pos(10, 10))])
         state = make_simple_game()
-        state.tick = 42
+        state.now = 42
 
         trajectory = compute_expected_trajectory(unit, state, start_tick=42)
 
         assert trajectory.unit_id == unit.id
-        assert trajectory.start_tick == state.tick
+        assert trajectory.start_tick == state.now
 
     def test_trajectory_for_horizontal_movement_is_straight_line(self) -> None:
         """Unit moving purely horizontally should follow expected path."""
