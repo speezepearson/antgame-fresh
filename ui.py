@@ -515,6 +515,19 @@ def make_initial_working_plan_interrupts() -> list[Interrupt[Any]]:
     )
 
 
+def set_checkbox_appearance(checkbox: pygame_gui.elements.UIButton, checked: bool, label: str) -> None:
+    """Update checkbox text and background color based on checked state."""
+    checkbox.set_text(f"{"☑" if checked else "☐"} {label}")
+    # Set background color: green tint for checked, default gray for unchecked
+    if checked:
+        checkbox.colours["normal_bg"] = pygame.Color(60, 100, 60)
+        checkbox.colours["hovered_bg"] = pygame.Color(70, 120, 70)
+    else:
+        checkbox.colours["normal_bg"] = pygame.Color(60, 60, 60)
+        checkbox.colours["hovered_bg"] = pygame.Color(80, 80, 80)
+    checkbox.rebuild()  # type: ignore[no-untyped-call]
+
+
 def initialize_game() -> GameContext:
     """Parse arguments and initialize game state, pygame, and UI elements."""
     # Parse command-line arguments
@@ -842,18 +855,17 @@ def handle_events(ctx: GameContext) -> bool:
                                 interrupts=make_initial_working_plan_interrupts()
                             )
                             # Reset checkboxes to default states
-                            view.plan_controls.fight_checkbox.set_text("☐ fight")
-                            view.plan_controls.flee_checkbox.set_text("☐ flee")
-                            view.plan_controls.forage_checkbox.set_text("☑ forage")
-                            view.plan_controls.come_back_checkbox.set_text("☑ come back")
+                            set_checkbox_appearance(view.plan_controls.fight_checkbox, False, "fight")
+                            set_checkbox_appearance(view.plan_controls.flee_checkbox, False, "flee")
+                            set_checkbox_appearance(view.plan_controls.forage_checkbox, True, "forage")
+                            set_checkbox_appearance(view.plan_controls.come_back_checkbox, True, "come back")
                         break
                     # Handle interrupt checkbox toggles
                     elif event.ui_element == view.plan_controls.fight_checkbox:
                         # Toggle fight checkbox
                         current_text = view.plan_controls.fight_checkbox.text
                         is_checked = current_text.startswith("☑")
-                        new_text = ("☐ fight" if is_checked else "☑ fight")
-                        view.plan_controls.fight_checkbox.set_text(new_text)
+                        set_checkbox_appearance(view.plan_controls.fight_checkbox, not is_checked, "fight")
                         # Update working plan interrupts
                         if view.working_plan is not None:
                             view.working_plan.interrupts = make_interrupts_from_checkboxes(
@@ -867,8 +879,7 @@ def handle_events(ctx: GameContext) -> bool:
                         # Toggle flee checkbox
                         current_text = view.plan_controls.flee_checkbox.text
                         is_checked = current_text.startswith("☑")
-                        new_text = ("☐ flee" if is_checked else "☑ flee")
-                        view.plan_controls.flee_checkbox.set_text(new_text)
+                        set_checkbox_appearance(view.plan_controls.flee_checkbox, not is_checked, "flee")
                         # Update working plan interrupts
                         if view.working_plan is not None:
                             view.working_plan.interrupts = make_interrupts_from_checkboxes(
@@ -882,8 +893,7 @@ def handle_events(ctx: GameContext) -> bool:
                         # Toggle forage checkbox
                         current_text = view.plan_controls.forage_checkbox.text
                         is_checked = current_text.startswith("☑")
-                        new_text = ("☐ forage" if is_checked else "☑ forage")
-                        view.plan_controls.forage_checkbox.set_text(new_text)
+                        set_checkbox_appearance(view.plan_controls.forage_checkbox, not is_checked, "forage")
                         # Update working plan interrupts
                         if view.working_plan is not None:
                             view.working_plan.interrupts = make_interrupts_from_checkboxes(
@@ -897,8 +907,7 @@ def handle_events(ctx: GameContext) -> bool:
                         # Toggle come back checkbox
                         current_text = view.plan_controls.come_back_checkbox.text
                         is_checked = current_text.startswith("☑")
-                        new_text = ("☐ come back" if is_checked else "☑ come back")
-                        view.plan_controls.come_back_checkbox.set_text(new_text)
+                        set_checkbox_appearance(view.plan_controls.come_back_checkbox, not is_checked, "come back")
                         # Update working plan interrupts
                         if view.working_plan is not None:
                             view.working_plan.interrupts = make_interrupts_from_checkboxes(
@@ -1113,21 +1122,28 @@ def draw_ui(ctx: GameContext) -> None:
                     text="☐ fight",
                     manager=ctx.ui_manager,
                 )
+                set_checkbox_appearance(fight_checkbox, False, "fight")
+
                 flee_checkbox = pygame_gui.elements.UIButton(
                     relative_rect=pygame.Rect(plan_offset_x + checkbox_spacing, checkbox_y, checkbox_width, 20),
                     text="☐ flee",
                     manager=ctx.ui_manager,
                 )
+                set_checkbox_appearance(flee_checkbox, False, "flee")
+
                 forage_checkbox = pygame_gui.elements.UIButton(
                     relative_rect=pygame.Rect(plan_offset_x + checkbox_spacing * 2, checkbox_y, checkbox_width, 20),
                     text="☑ forage",
                     manager=ctx.ui_manager,
                 )
+                set_checkbox_appearance(forage_checkbox, True, "forage")
+
                 come_back_checkbox = pygame_gui.elements.UIButton(
                     relative_rect=pygame.Rect(plan_offset_x + checkbox_spacing * 3, checkbox_y, checkbox_width, 20),
                     text="☑ come back",
                     manager=ctx.ui_manager,
                 )
+                set_checkbox_appearance(come_back_checkbox, True, "come back")
 
                 view.plan_controls = PlanControls(
                     text_box=text_box,
