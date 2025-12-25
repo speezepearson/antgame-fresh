@@ -343,11 +343,11 @@ class GameState:
 
     def tick(self) -> None:
         self.now += 1
-        for unit in self.units.values():
+        for unit in list(self.units.values()):
             unit.clock = self.now
             step = unit.mind.act(unit)
             step.execute(unit, self)
-        
+
         for unit in self.units.values():
             unit.mind.observe(unit, self.observe_from_position(unit.pos, unit.visibility_radius))
 
