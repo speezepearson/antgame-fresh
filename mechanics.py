@@ -548,7 +548,6 @@ class GameState:
     tick: Timestamp = 0
     units: dict[UnitId, Unit] = field(default_factory=dict)
     food: dict[Pos, int] = field(default_factory=dict)
-    unit_disposition: dict[Team, UnitType] = field(default_factory=lambda: {Team.RED: UnitType.FIGHTER, Team.BLUE: UnitType.FIGHTER})
 
     def get_base_region(self, team: Team) -> Region:
         """Get a team's base region."""
@@ -570,6 +569,53 @@ class GameState:
         if not unit.is_in_base(self):
             raise ValueError(f"Unit {unit_id} is not in base")
         unit.plan = plan
+
+    def spawn_unit(self, team: Team, unit_type: UnitType) -> Unit | None:
+        """Spawn a unit of the given type for the given team, consuming food from the base.
+
+        Returns the spawned unit if successful, None if no food or no space available.
+        """
+        base_region = self.get_base_region(team)
+
+        # Find food positions within the base
+        food_positions_in_base = [
+            pos for pos in self.food.keys() if base_region.contains(pos)
+        ]
+        if not food_positions_in_base:
+            return None
+
+        # Find unoccupied cells in the base for spawning
+        occupied_positions = {unit.pos for unit in self.units.values()}
+        unoccupied_cells = [
+            cell for cell in base_region.cells if cell not in occupied_positions
+        ]
+        if not unoccupied_cells:
+            return None
+
+        # Consume food from a random position in the base
+        food_pos = random.choice(food_positions_in_base)
+        self.food[food_pos] -= 1
+        if self.food[food_pos] <= 0:
+            del self.food[food_pos]
+
+        # Spawn the unit in a random unoccupied cell
+        spawn_pos = random.choice(unoccupied_cells)
+        new_unit = Unit(
+            id=_generate_unit_id(),
+            team=team,
+            pos=spawn_pos,
+            original_pos=spawn_pos,
+            unit_type=unit_type,
+        )
+        self.upsert_units(new_unit)
+        return new_unit
+
+    def get_food_count_in_base(self, team: Team) -> int:
+        """Get the total amount of food in a team's base."""
+        base_region = self.get_base_region(team)
+        return sum(
+            count for pos, count in self.food.items() if base_region.contains(pos)
+        )
 
     def observe_from_position(
         self, observer_pos: Pos, visibility_radius: int
@@ -674,33 +720,13 @@ def tick_game(state: GameState) -> None:
 
     state.kill_units(*units_to_remove)
 
-    # 3.75. Process food at bases to spawn new units
+    # 3.75. Units in base drop their carried food onto the ground
     for team in Team:
         base_region = state.get_base_region(team)
-        unoccupied_cells = [
-            cell
-            for cell in base_region.cells
-            if cell not in {unit.pos for unit in state.units.values()}
-        ]
-        new_units: list[Unit] = []
         for u in state.units.values():
-            if u.team == team and base_region.contains(u.pos):
-                while unoccupied_cells and u.carrying_food > 0:
-                    closest_cell = min(
-                        unoccupied_cells,
-                        key=lambda cell: u.pos.manhattan_distance(cell),
-                    )
-                    new_units.append(
-                        Unit(
-                            id=_generate_unit_id(),
-                            team=u.team,
-                            pos=closest_cell,
-                            original_pos=closest_cell,
-                            unit_type=state.unit_disposition[team],
-                        )
-                    )
-                    unoccupied_cells.remove(closest_cell)
-                    u.carrying_food -= 1
-        state.upsert_units(*new_units)
+            if u.team == team and base_region.contains(u.pos) and u.carrying_food > 0:
+                state.food.setdefault(u.pos, 0)
+                state.food[u.pos] += u.carrying_food
+                u.carrying_food = 0
 
     state.tick += 1

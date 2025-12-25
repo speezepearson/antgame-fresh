@@ -9,6 +9,7 @@ from mechanics import (
     MoveThereAction,
     Team,
     Unit,
+    UnitType,
     GameState,
     Move,
     Plan,
@@ -501,8 +502,8 @@ class TestUnitsCarryFood:
         assert state.food.get(Pos(0, 2)) == 5
 
 
-class TestCarriedFoodSpawnsUnits:
-    def test_unit_carrying_food_in_own_base_spawns_unit_in_empty_cell(self) -> None:
+class TestCarriedFoodDropsAtBase:
+    def test_unit_carrying_food_in_own_base_drops_food_on_ground(self) -> None:
         state = make_simple_game(
             red_base=Region(cells=frozenset({Pos(0, i) for i in range(5)}))
         )
@@ -514,10 +515,12 @@ class TestCarriedFoodSpawnsUnits:
 
         tick_game(state)
 
-        assert len(state.units) == 2
-        assert {unit.pos for unit in state.units.values()} <= red_base.cells
+        # Food should be dropped at the unit's position, not spawn a new unit
+        assert len(state.units) == 1
+        assert red_unit.carrying_food == 0
+        assert state.food.get(base_cell) == 1
 
-    def test_unit_loses_food_when_unit_is_spawned(self) -> None:
+    def test_unit_loses_food_when_dropped_at_base(self) -> None:
         state = make_simple_game(
             red_base=Region(cells=frozenset({Pos(0, i) for i in range(5)}))
         )
@@ -527,10 +530,12 @@ class TestCarriedFoodSpawnsUnits:
         red_unit.carrying_food = 2
         state.upsert_units(red_unit)
         tick_game(state)
-        assert len(state.units) == 3
+        # Food is dropped, unit count unchanged
+        assert len(state.units) == 1
         assert red_unit.carrying_food == 0
+        assert state.food.get(base_cell) == 2
 
-    def test_unit_carrying_food_in_enemy_base_does_not_spawn_unit(self) -> None:
+    def test_unit_carrying_food_in_enemy_base_does_not_drop_food(self) -> None:
         state = make_simple_game()
         blue_base = state.get_base_region(Team.BLUE)
         base_cell = next(iter(blue_base.cells))
@@ -540,29 +545,12 @@ class TestCarriedFoodSpawnsUnits:
 
         tick_game(state)
 
+        # Food should not be dropped in enemy base
         assert set(state.units.keys()) == {red_unit.id}
+        assert red_unit.carrying_food == 1
+        assert state.food.get(base_cell) is None
 
-    def test_no_unit_spawned_when_base_full(self) -> None:
-        state = make_simple_game()
-
-        red_base = state.get_base_region(Team.RED)
-        base_cells = list(red_base.cells)
-
-        # Fill all base cells with units
-        state.upsert_units(*[make_unit(Team.RED, cell) for cell in base_cells])
-
-        # Place food at a base cell
-        state.food[base_cells[0]] = 1
-
-        initial_unit_count = len(state.units)
-        tick_game(state)
-
-        # No new unit should be spawned since base is full
-        assert len(state.units) == initial_unit_count
-        # Food should still be there
-        assert state.food.get(base_cells[0]) == 1
-
-    def test_multiple_food_items_spawn_multiple_units(self) -> None:
+    def test_multiple_food_items_dropped_at_base(self) -> None:
         red_unit = make_unit(Team.RED, Pos(0, 0))
         red_unit.carrying_food = 2
         state = make_simple_game(
@@ -572,5 +560,64 @@ class TestCarriedFoodSpawnsUnits:
 
         tick_game(state)
 
-        assert len(state.units) == 3
+        # Food is dropped, unit count unchanged
+        assert len(state.units) == 1
         assert red_unit.carrying_food == 0
+        assert state.food.get(Pos(0, 0)) == 2
+
+
+class TestManualUnitSpawn:
+    def test_spawn_unit_consumes_food_from_base(self) -> None:
+        state = make_simple_game(
+            red_base=Region(cells=frozenset({Pos(0, i) for i in range(5)}))
+        )
+        # Add food to the base
+        state.food[Pos(0, 0)] = 3
+
+        initial_food = state.get_food_count_in_base(Team.RED)
+        unit = state.spawn_unit(Team.RED, UnitType.FIGHTER)
+
+        assert unit is not None
+        assert unit.team == Team.RED
+        assert unit.unit_type == UnitType.FIGHTER
+        assert state.get_food_count_in_base(Team.RED) == initial_food - 1
+
+    def test_spawn_unit_returns_none_when_no_food(self) -> None:
+        state = make_simple_game(
+            red_base=Region(cells=frozenset({Pos(0, i) for i in range(5)}))
+        )
+        # No food in base
+
+        unit = state.spawn_unit(Team.RED, UnitType.FIGHTER)
+
+        assert unit is None
+
+    def test_spawn_unit_returns_none_when_base_full(self) -> None:
+        state = make_simple_game(
+            red_base=Region(cells=frozenset({Pos(0, i) for i in range(3)}))
+        )
+        red_base = state.get_base_region(Team.RED)
+        # Fill all base cells with units
+        state.upsert_units(*[make_unit(Team.RED, cell) for cell in red_base.cells])
+        # Add food to the base
+        state.food[Pos(0, 0)] = 1
+
+        unit = state.spawn_unit(Team.RED, UnitType.FIGHTER)
+
+        assert unit is None
+        # Food should still be there
+        assert state.food.get(Pos(0, 0)) == 1
+
+    def test_spawn_unit_creates_correct_unit_type(self) -> None:
+        state = make_simple_game(
+            red_base=Region(cells=frozenset({Pos(0, i) for i in range(5)}))
+        )
+        state.food[Pos(0, 0)] = 2
+
+        fighter = state.spawn_unit(Team.RED, UnitType.FIGHTER)
+        scout = state.spawn_unit(Team.RED, UnitType.SCOUT)
+
+        assert fighter is not None
+        assert fighter.unit_type == UnitType.FIGHTER
+        assert scout is not None
+        assert scout.unit_type == UnitType.SCOUT

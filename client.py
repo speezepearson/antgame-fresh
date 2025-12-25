@@ -31,8 +31,16 @@ class GameClient(ABC):
         pass
 
     @abstractmethod
-    def set_unit_disposition(self, team: Team, unit_type: UnitType) -> None:
-        """Set the type of units to spawn when food is brought back to the base."""
+    def spawn_unit(self, team: Team, unit_type: UnitType) -> bool:
+        """Spawn a unit of the given type for the given team, consuming food from the base.
+
+        Returns True if successful, False if no food or no space available.
+        """
+        pass
+
+    @abstractmethod
+    def get_food_count_in_base(self, team: Team) -> int:
+        """Get the total amount of food in a team's base."""
         pass
 
     @abstractmethod
@@ -78,8 +86,11 @@ class LocalClient(GameClient):
         # LocalClient has direct access, so just call the method
         self.state.set_unit_plan(unit_id, plan)
 
-    def set_unit_disposition(self, team: Team, unit_type: UnitType) -> None:
-        self.state.unit_disposition[team] = unit_type
+    def spawn_unit(self, team: Team, unit_type: UnitType) -> bool:
+        return self.state.spawn_unit(team, unit_type) is not None
+
+    def get_food_count_in_base(self, team: Team) -> int:
+        return self.state.get_food_count_in_base(team)
 
     def get_base_region(self, team: Team) -> Region:
         return self.state.base_regions[team]
@@ -165,20 +176,39 @@ class RemoteClient(GameClient):
             print(f"Error setting unit plan: {e}")
             raise
 
-    def set_unit_disposition(self, team: Team, unit_type: UnitType) -> None:
+    def spawn_unit(self, team: Team, unit_type: UnitType) -> bool:
         if team != self.team:
             raise ValueError(f"Can only control own team ({self.team}) in remote mode")
 
         try:
             response = requests.post(
-                f"{self.url}/disposition/{team.name}",
+                f"{self.url}/spawn/{team.name}",
                 json={"unit_type": unit_type.value},
                 timeout=5,
             )
             response.raise_for_status()
+            return bool(response.json().get("success", False))
         except Exception as e:
-            print(f"Error setting unit disposition: {e}")
+            print(f"Error spawning unit: {e}")
             raise
+
+    def get_food_count_in_base(self, team: Team) -> int:
+        if team != self.team:
+            raise ValueError(f"Can only view own team ({self.team}) in remote mode")
+
+        # Food count is included in knowledge updates
+        # For now, return 0 - this will need server support
+        # In a real implementation, we'd track this in _current_knowledge
+        try:
+            response = requests.get(
+                f"{self.url}/food_count/{team.name}",
+                timeout=5,
+            )
+            response.raise_for_status()
+            return int(response.json().get("count", 0))
+        except Exception as e:
+            print(f"Error getting food count: {e}")
+            return 0
 
     def get_base_region(self, team: Team) -> Region:
         if team != self.team:
