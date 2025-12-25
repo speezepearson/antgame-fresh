@@ -55,10 +55,10 @@ class TestComputeExpectedTrajectory:
             next_dist = trajectory.positions[i + 1].manhattan_distance(target)
             assert next_dist <= curr_dist
 
-    def test_trajectory_for_unit_with_move_order_terminates_early_when_unit_arrives(
+    def test_trajectory_runs_for_full_max_ticks_even_after_arrival(
         self,
     ) -> None:
-        """Trajectory should stop when unit reaches destination, not continue to max_ticks."""
+        """Trajectory should run for full max_ticks, with unit staying at destination after arrival."""
         unit = make_unit(Team.RED, Pos(5, 5))
         target = Pos(8, 5)  # Only 3 steps away
         unit.plan = Plan(orders=[Move(target=target)])
@@ -68,24 +68,27 @@ class TestComputeExpectedTrajectory:
             unit, state, start_tick=0, max_ticks=100
         )
 
-        # Should only have 4 positions: start + 3 steps
-        # (5,5) -> (6,5) -> (7,5) -> (8,5)
-        assert len(trajectory.positions) == 4
-        assert trajectory.positions[-1] == target
+        # Should have 101 positions: initial + 100 ticks
+        assert len(trajectory.positions) == 101
+        # Unit should reach target at position index 3
+        assert trajectory.positions[3] == target
+        # Unit should stay at target for remaining ticks
+        assert all(pos == target for pos in trajectory.positions[3:])
 
-    def test_trajectory_for_unit_with_no_orders_is_singleton_at_current_pos(
+    def test_trajectory_for_unit_with_no_orders_stays_at_current_pos(
         self,
     ) -> None:
-        """Unit with no orders should have trajectory with just its current position."""
+        """Unit with no orders should stay at current position for full max_ticks."""
         unit = make_unit(Team.RED, Pos(5, 5))
         unit.plan = Plan(orders=[])  # No orders
         state = make_simple_game()
 
-        trajectory = compute_expected_trajectory(unit, state, start_tick=0)
+        trajectory = compute_expected_trajectory(unit, state, start_tick=0, max_ticks=100)
 
-        # Should only contain the starting position
-        assert len(trajectory.positions) == 1
-        assert trajectory.positions[0] == Pos(5, 5)
+        # Should have 101 positions: initial + 100 ticks
+        assert len(trajectory.positions) == 101
+        # All positions should be the starting position
+        assert all(pos == Pos(5, 5) for pos in trajectory.positions)
 
     def test_trajectory_with_multiple_sequential_orders(self) -> None:
         """Unit with multiple move orders should follow them in sequence."""
@@ -99,15 +102,16 @@ class TestComputeExpectedTrajectory:
             unit, state, start_tick=0, max_ticks=100
         )
 
+        # Should have 101 positions: initial + 100 ticks
+        assert len(trajectory.positions) == 101
         # Should start at origin
         assert trajectory.positions[0] == Pos(0, 0)
-        # Should pass through or end at waypoint1
+        # Should pass through waypoint1
         assert waypoint1 in trajectory.positions
-        # Should end at waypoint2
-        assert trajectory.positions[-1] == waypoint2
-        # Total distance should be manhattan distance to waypoint1 + waypoint2
-        # 0,0 -> 3,0 is 3 steps, 3,0 -> 3,3 is 3 steps = 6 steps + initial pos = 7 positions
-        assert len(trajectory.positions) == 7
+        # Should reach waypoint2 at position index 6 (0,0 -> 3,0 is 3 steps, 3,0 -> 3,3 is 3 steps)
+        assert trajectory.positions[6] == waypoint2
+        # Should stay at waypoint2 for remaining ticks
+        assert all(pos == waypoint2 for pos in trajectory.positions[6:])
 
     def test_trajectory_respects_max_ticks_limit(self) -> None:
         """Trajectory should stop at max_ticks even if order not complete."""
@@ -145,6 +149,11 @@ class TestComputeExpectedTrajectory:
         unit.plan = Plan(orders=[Move(target=target)])
         state = make_simple_game()
 
-        trajectory = compute_expected_trajectory(unit, state, start_tick=0)
+        trajectory = compute_expected_trajectory(unit, state, start_tick=0, max_ticks=100)
 
-        assert trajectory.positions == [Pos(i, 5) for i in range(5)]
+        # Should have 101 positions: initial + 100 ticks
+        assert len(trajectory.positions) == 101
+        # First 5 positions should be the straight line (0,5) -> (1,5) -> (2,5) -> (3,5) -> (4,5)
+        assert trajectory.positions[:5] == [Pos(i, 5) for i in range(5)]
+        # Remaining positions should all be at target
+        assert all(pos == target for pos in trajectory.positions[4:])
