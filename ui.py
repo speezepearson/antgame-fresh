@@ -86,7 +86,6 @@ class GameContext:
     client: GameClient
     grid_width: int
     grid_height: int
-    ui_manager: arcade.gui.UIManager
     views: dict[Team, PlayerView]
     team_offsets: dict[Team, int]
     red_offset_x: int
@@ -98,6 +97,7 @@ class GameContext:
     tick_interval: int
     last_tick: float
     start_time: float  # For get_ticks replacement
+    ui_manager: arcade.gui.UIManager | None = None
 
 
 def format_plan(plan: Plan, unit: Unit) -> list[str]:
@@ -613,7 +613,8 @@ class AntGameWindow(arcade.Window):
                     view.plan_controls = None
 
         # Draw UI manager
-        self.game_ctx.ui_manager.draw()
+        if self.game_ctx.ui_manager:
+            self.game_ctx.ui_manager.draw()
 
     def on_update(self, delta_time: float) -> None:
         """Update game state."""
@@ -636,12 +637,13 @@ class AntGameWindow(arcade.Window):
             raise ValueError(f"Unknown client type: {type(self.game_ctx.client)}")
 
         # Update UI manager
-        self.game_ctx.ui_manager.on_update(delta_time)  # type: ignore[no-untyped-call]
+        if self.game_ctx.ui_manager:
+            self.game_ctx.ui_manager.on_update(delta_time)  # type: ignore[no-untyped-call]
 
     def on_mouse_press(self, x: int, y: int, button: int, modifiers: int) -> None:
         """Handle mouse clicks."""
         # Let UI manager handle it first
-        if self.game_ctx.ui_manager.on_mouse_press(x, y, button, modifiers):
+        if self.game_ctx.ui_manager and self.game_ctx.ui_manager.on_mouse_press(x, y, button, modifiers):
             return
 
         # Only handle left clicks
@@ -808,9 +810,6 @@ def initialize_game() -> tuple[GameContext, AntGameWindow]:
         map_pixel_size + padding * 2 + label_height + slider_height + plan_area_height
     )
 
-    # Initialize arcade.gui manager
-    ui_manager = arcade.gui.UIManager()
-
     red_offset_x = padding
     god_offset_x = padding * 2 + map_pixel_size
     blue_offset_x = padding * 3 + map_pixel_size * 2
@@ -935,7 +934,6 @@ def initialize_game() -> tuple[GameContext, AntGameWindow]:
         client=client,
         grid_width=grid_width,
         grid_height=grid_height,
-        ui_manager=ui_manager,
         views=views,
         team_offsets=team_offsets,
         red_offset_x=red_offset_x,
@@ -949,10 +947,12 @@ def initialize_game() -> tuple[GameContext, AntGameWindow]:
         start_time=0.0,  # Will be set by window
     )
 
-    # Create window
+    # Create window first (required for UIManager)
     window = AntGameWindow(ctx, window_width, window_height)
 
-    # Enable UI manager
+    # Now create UIManager with the window
+    ui_manager = arcade.gui.UIManager()
+    ctx.ui_manager = ui_manager
     ui_manager.enable()
 
     # Add slider event handlers
