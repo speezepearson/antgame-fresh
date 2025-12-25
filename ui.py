@@ -779,18 +779,22 @@ class AntGameWindow(arcade.Window):
                     blue_view.tick_controls.slider.value = blue_view_tick / current_tick
                     blue_view.tick_controls.tick_label.text = f"t={blue_view_tick}"
 
-        # Update disposition button appearance based on current setting
-        if isinstance(self.game_ctx.client, LocalClient):
-            for team in Team:
-                view = self.game_ctx.views[team]
-                if view.disposition_controls:
-                    current_disposition = self.game_ctx.client.state.unit_disposition[team]
-                    if current_disposition == UnitType.FIGHTER:
-                        view.disposition_controls.fighter_btn.text = "Fighter ✓"
-                        view.disposition_controls.scout_btn.text = "Scout"
-                    else:
-                        view.disposition_controls.fighter_btn.text = "Fighter"
-                        view.disposition_controls.scout_btn.text = "Scout ✓"
+        # Update spawn button appearance based on food availability
+        for team in self.game_ctx.client.get_available_teams():
+            view = self.game_ctx.views[team]
+            if view.disposition_controls:
+                food_count = self.game_ctx.client.get_food_count_in_base(team)
+                has_food = food_count > 0
+                # Update button text and enabled state
+                view.disposition_controls.fighter_btn.text = f"Fighter ({food_count})"
+                view.disposition_controls.scout_btn.text = f"Scout ({food_count})"
+                # Disable buttons when no food (change style)
+                if has_food:
+                    view.disposition_controls.fighter_btn.disabled = False
+                    view.disposition_controls.scout_btn.disabled = False
+                else:
+                    view.disposition_controls.fighter_btn.disabled = True
+                    view.disposition_controls.scout_btn.disabled = True
 
         # Handle plan controls for each team
         for team in Team:
@@ -1314,18 +1318,18 @@ def initialize_game() -> tuple[GameContext, AntGameWindow]:
     def on_blue_live_click(event: Any) -> None:
         ctx.views[Team.BLUE].freeze_frame = None
 
-    # Disposition button handlers
+    # Spawn button handlers
     def on_red_fighter_click(event: Any) -> None:
-        ctx.client.set_unit_disposition(Team.RED, UnitType.FIGHTER)
+        ctx.client.spawn_unit(Team.RED, UnitType.FIGHTER)
 
     def on_red_scout_click(event: Any) -> None:
-        ctx.client.set_unit_disposition(Team.RED, UnitType.SCOUT)
+        ctx.client.spawn_unit(Team.RED, UnitType.SCOUT)
 
     def on_blue_fighter_click(event: Any) -> None:
-        ctx.client.set_unit_disposition(Team.BLUE, UnitType.FIGHTER)
+        ctx.client.spawn_unit(Team.BLUE, UnitType.FIGHTER)
 
     def on_blue_scout_click(event: Any) -> None:
-        ctx.client.set_unit_disposition(Team.BLUE, UnitType.SCOUT)
+        ctx.client.spawn_unit(Team.BLUE, UnitType.SCOUT)
 
     # Register event handlers using decorators
     @red_slider.event("on_change")
