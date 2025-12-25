@@ -706,7 +706,8 @@ class AntGameWindow(arcade.Window):
                     )
 
                     # Initialize or update plan controls
-                    if view.plan_controls is None or view.plan_controls.last_plan_text != plan_text:
+                    if view.plan_controls is None:
+                        # First time creating plan controls - initialize with all checkboxes checked
                         view.plan_controls = PlanControls(
                             text_area=None,  # type: ignore
                             last_plan_text=plan_text,
@@ -719,6 +720,9 @@ class AntGameWindow(arcade.Window):
                             come_back_checkbox=None,  # type: ignore
                             checkbox_states={"fight": True, "flee": True, "forage": True, "come_back": True},
                         )
+                    else:
+                        # Update plan text while preserving checkbox states
+                        view.plan_controls.last_plan_text = plan_text
 
                     # Draw interrupt checkboxes
                     checkbox_y = btn_y - 25
