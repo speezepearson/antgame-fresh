@@ -567,6 +567,15 @@ class AntGameWindow(arcade.Window):
         # Handle plan controls for each team
         for team in Team:
             view = self.game_ctx.views[team]
+            plan_offset_x = self.game_ctx.team_offsets[team]
+
+            # Plan area layout (same as original)
+            plan_y = self.game_ctx.slider_y + 30
+            arcade_plan_y = self.height - plan_y
+            plan_box_width = self.game_ctx.map_pixel_size
+            plan_box_height = 180
+            btn_y_offset = -plan_box_height - 5
+            selection_label_y = self.height - self.game_ctx.slider_y
 
             if view.selected_unit_id is not None:
                 # Get the selected unit from player knowledge
@@ -588,25 +597,95 @@ class AntGameWindow(arcade.Window):
 
                 team_name = team.value
 
-                # Create plan controls if they don't exist
-                if view.plan_controls is None:
-                    # Note: In arcade.gui, we'd need to create widgets here
-                    # For simplicity, we'll skip the full UI implementation for now
-                    # and just display text using arcade.draw_text
-                    pass
-
                 # Display the working plan
                 if view.working_plan is not None:
                     plan_lines = format_plan(view.working_plan, selected_unit)
-                    # We'll draw this text directly in on_draw
-                    # Store it for rendering
-                    view.plan_controls = PlanControls(
-                        text_area=None,  # type: ignore
-                        last_plan_text="\n".join(plan_lines),
-                        issue_plan_btn=None,  # type: ignore
-                        clear_plan_btn=None,  # type: ignore
-                        selection_label=None,  # type: ignore
+                    plan_text = "\n".join(plan_lines)
+
+                    # Draw selection label
+                    label_text = f"Selected: {team_name} unit - click {team_name}'s map to add waypoints"
+                    arcade.draw_text(
+                        label_text,
+                        plan_offset_x,
+                        selection_label_y,
+                        arcade.color.WHITE,
+                        font_size=10,
                     )
+
+                    # Draw plan text box background
+                    arcade.draw_lbwh_rectangle_filled(
+                        plan_offset_x,
+                        arcade_plan_y - plan_box_height,
+                        plan_box_width,
+                        plan_box_height,
+                        (40, 40, 40),
+                    )
+                    arcade.draw_lbwh_rectangle_outline(
+                        plan_offset_x,
+                        arcade_plan_y - plan_box_height,
+                        plan_box_width,
+                        plan_box_height,
+                        arcade.color.WHITE,
+                        2
+                    )
+
+                    # Draw plan text
+                    arcade.draw_text(
+                        plan_text,
+                        plan_offset_x + 5,
+                        arcade_plan_y - 20,
+                        arcade.color.WHITE,
+                        font_size=10,
+                        multiline=True,
+                        width=plan_box_width - 10,
+                    )
+
+                    # Draw buttons
+                    btn_y = arcade_plan_y + btn_y_offset - 5
+
+                    # Issue Plan button
+                    has_orders = view.working_plan and view.working_plan.orders
+                    issue_btn_color = arcade.color.GREEN if has_orders else arcade.color.GRAY
+                    arcade.draw_lbwh_rectangle_filled(
+                        plan_offset_x,
+                        btn_y,
+                        80,
+                        20,
+                        issue_btn_color,
+                    )
+                    arcade.draw_text(
+                        "Issue Plan",
+                        plan_offset_x + 5,
+                        btn_y + 5,
+                        arcade.color.BLACK,
+                        font_size=10,
+                    )
+
+                    # Clear button
+                    arcade.draw_lbwh_rectangle_filled(
+                        plan_offset_x + 90,
+                        btn_y,
+                        60,
+                        20,
+                        arcade.color.RED,
+                    )
+                    arcade.draw_text(
+                        "Clear",
+                        plan_offset_x + 100,
+                        btn_y + 5,
+                        arcade.color.BLACK,
+                        font_size=10,
+                    )
+
+                    # Store button positions for click detection
+                    if view.plan_controls is None or view.plan_controls.last_plan_text != plan_text:
+                        view.plan_controls = PlanControls(
+                            text_area=None,  # type: ignore
+                            last_plan_text=plan_text,
+                            issue_plan_btn=None,  # type: ignore
+                            clear_plan_btn=None,  # type: ignore
+                            selection_label=None,  # type: ignore
+                        )
 
             else:
                 # No selected unit for this team, clean up plan controls if they exist
@@ -650,6 +729,37 @@ class AntGameWindow(arcade.Window):
         # Only handle left clicks
         if button != arcade.MOUSE_BUTTON_LEFT:
             return
+
+        # Check for plan control button clicks first
+        for team in Team:
+            view = self.game_ctx.views[team]
+            if view.selected_unit_id is not None and view.working_plan is not None:
+                plan_offset_x = self.game_ctx.team_offsets[team]
+                plan_y = self.game_ctx.slider_y + 30
+                arcade_plan_y = self.height - plan_y
+                plan_box_height = 180
+                btn_y_offset = -plan_box_height - 5
+                btn_y = arcade_plan_y + btn_y_offset - 5
+
+                # Check Issue Plan button (80x20 at plan_offset_x, btn_y)
+                if (plan_offset_x <= x <= plan_offset_x + 80 and
+                    btn_y <= y <= btn_y + 20):
+                    # Issue plan button clicked
+                    if view.working_plan.orders:
+                        self.game_ctx.client.set_unit_plan(
+                            team, view.selected_unit_id, view.working_plan
+                        )
+                        view.selected_unit_id = None
+                        view.working_plan = None
+                        view.plan_controls = None
+                    return
+
+                # Check Clear button (60x20 at plan_offset_x + 90, btn_y)
+                if (plan_offset_x + 90 <= x <= plan_offset_x + 150 and
+                    btn_y <= y <= btn_y + 20):
+                    # Clear button clicked
+                    view.working_plan = Plan(interrupts=make_default_interrupts())
+                    return
 
         for team in Team:
             view = self.game_ctx.views[team]
