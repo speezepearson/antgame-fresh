@@ -113,7 +113,7 @@ class EnemyInRangeCondition:
         return f"enemy within {self.distance}"
 
     def evaluate(self, mind: PlanningMind, body: Unit) -> Pos | None:
-        for pos, contents_list in mind.logbook.last_observations_by_pos.items():
+        for pos, (timestamp, contents_list) in mind.logbook.last_observations_by_pos.items():
             for contents in contents_list:
                 if isinstance(contents, UnitPresent) and contents.team != body.team:
                     if body.pos.manhattan_distance(pos) <= self.distance:
@@ -145,7 +145,7 @@ class BaseVisibleCondition:
         return "base visible"
 
     def evaluate(self, mind: PlanningMind, body: Unit) -> Pos | None:
-        for pos, contents_list in mind.logbook.last_observations_by_pos.items():
+        for pos, (timestamp, contents_list) in mind.logbook.last_observations_by_pos.items():
             for contents in contents_list:
                 if isinstance(contents, BasePresent) and contents.team == body.team:
                     return pos

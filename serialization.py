@@ -1,7 +1,7 @@
 """Serialization and deserialization for network communication."""
 
 from __future__ import annotations
-from typing import Any, Dict, List
+from typing import Any, Dict, List, cast
 import json
 
 from core import Pos, Region, Timestamp
@@ -10,6 +10,13 @@ from mechanics import (
     UnitId,
     Unit,
     UnitType,
+    Empty,
+    UnitPresent,
+    BasePresent,
+    FoodPresent,
+    CellContents,
+)
+from planning import (
     Plan,
     Move,
     Order,
@@ -22,13 +29,9 @@ from mechanics import (
     MoveThereAction,
     MoveHomeAction,
     ResumeAction,
-    Empty,
-    UnitPresent,
-    BasePresent,
-    FoodPresent,
-    CellContents,
-    ObservationLog,
+    PlanningMind,
 )
+from logbook import ObservationLog
 from knowledge import PlayerKnowledge, ExpectedTrajectory
 
 
@@ -224,30 +227,34 @@ def deserialize_plan(data: Dict[str, Any]) -> Plan:
 
 
 def serialize_unit(unit: Unit) -> Dict[str, Any]:
-    return {
+    """Serialize a Unit. If it has a PlanningMind, also serialize plan and original_pos."""
+    result: Dict[str, Any] = {
         "id": int(unit.id),
         "team": serialize_team(unit.team),
         "pos": serialize_pos(unit.pos),
-        "original_pos": serialize_pos(unit.original_pos),
         "unit_type": serialize_unit_type(unit.unit_type),
         "carrying_food": unit.carrying_food,
-        "plan": serialize_plan(unit.plan),
-        # Note: We don't serialize observation_log and last_sync_tick
-        # as they're not needed for player knowledge
     }
+    # If the unit has a PlanningMind, include plan and original_pos
+    if isinstance(unit.mind, PlanningMind):
+        result["plan"] = serialize_plan(unit.mind.plan)
+        if unit.mind.original_pos is not None:
+            result["original_pos"] = serialize_pos(unit.mind.original_pos)
+    return result
 
 
 def deserialize_unit(data: Dict[str, Any]) -> Unit:
+    """Deserialize a Unit. Creates a PlanningMind if plan data is present."""
+    plan = deserialize_plan(data["plan"]) if "plan" in data else Plan()
+    original_pos = deserialize_pos(data["original_pos"]) if "original_pos" in data else deserialize_pos(data["pos"])
+    mind = PlanningMind(plan=plan, original_pos=original_pos)
     return Unit(
         id=UnitId(data["id"]),
         team=deserialize_team(data["team"]),
+        mind=mind,
         pos=deserialize_pos(data["pos"]),
-        original_pos=deserialize_pos(data["original_pos"]),
         unit_type=deserialize_unit_type(data.get("unit_type", "FIGHTER")),
         carrying_food=data["carrying_food"],
-        plan=deserialize_plan(data["plan"]),
-        observation_log={},  # Empty in deserialized units
-        last_sync_tick=Timestamp(0),
     )
 
 
@@ -284,19 +291,19 @@ def deserialize_observation_log(data: Dict[str, Any]) -> ObservationLog:
 
 
 def serialize_expected_trajectory(trajectory: ExpectedTrajectory) -> Dict[str, Any]:
+    """Serialize ExpectedTrajectory (dict[Timestamp, Pos])."""
     return {
-        "unit_id": int(trajectory.unit_id),
-        "start_tick": trajectory.start_tick,
-        "positions": [serialize_pos(pos) for pos in trajectory.positions],
+        str(tick): serialize_pos(pos)
+        for tick, pos in trajectory.items()
     }
 
 
 def deserialize_expected_trajectory(data: Dict[str, Any]) -> ExpectedTrajectory:
-    return ExpectedTrajectory(
-        unit_id=UnitId(data["unit_id"]),
-        start_tick=Timestamp(data["start_tick"]),
-        positions=[deserialize_pos(pos) for pos in data["positions"]],
-    )
+    """Deserialize ExpectedTrajectory (dict[Timestamp, Pos])."""
+    return {
+        Timestamp(int(tick_str)): deserialize_pos(pos_data)
+        for tick_str, pos_data in data.items()
+    }
 
 
 # ===== Player Knowledge =====
@@ -308,8 +315,8 @@ def serialize_player_knowledge(knowledge: PlayerKnowledge) -> Dict[str, Any]:
         "grid_width": knowledge.grid_width,
         "grid_height": knowledge.grid_height,
         "tick": knowledge.tick,
-        "all_observations": serialize_observation_log(knowledge.all_observations),
-        "last_seen": {
+        "observation_log": serialize_observation_log(knowledge.logbook.observation_log),
+        "last_in_base": {
             int(unit_id): {
                 "timestamp": timestamp,
                 "unit": serialize_unit(unit),
@@ -320,17 +327,16 @@ def serialize_player_knowledge(knowledge: PlayerKnowledge) -> Dict[str, Any]:
             int(unit_id): serialize_expected_trajectory(trajectory)
             for unit_id, trajectory in knowledge.expected_trajectories.items()
         },
-        "last_observations": {
-            f"{pos.x},{pos.y}": {
-                "timestamp": timestamp,
-                "contents": [serialize_cell_contents(c) for c in contents_list],
-            }
-            for pos, (timestamp, contents_list) in knowledge.last_observations.items()
+        "own_units_in_base": {
+            int(unit_id): serialize_unit(unit)
+            for unit_id, unit in knowledge.own_units_in_base.items()
         },
     }
 
 
 def deserialize_player_knowledge(data: Dict[str, Any]) -> PlayerKnowledge:
+    from logbook import Logbook
+
     knowledge = PlayerKnowledge(
         team=deserialize_team(data["team"]),
         grid_width=data["grid_width"],
@@ -338,28 +344,26 @@ def deserialize_player_knowledge(data: Dict[str, Any]) -> PlayerKnowledge:
         tick=Timestamp(data["tick"]),
     )
 
-    knowledge.all_observations = deserialize_observation_log(data["all_observations"])
+    # Restore observation log to logbook
+    if "observation_log" in data:
+        knowledge.logbook.observation_log = deserialize_observation_log(data["observation_log"])
 
     knowledge.last_in_base = {
         UnitId(int(unit_id_str)): (
             Timestamp(value["timestamp"]),
             deserialize_unit(value["unit"]),
         )
-        for unit_id_str, value in data["last_seen"].items()
+        for unit_id_str, value in data.get("last_in_base", {}).items()
     }
 
     knowledge.expected_trajectories = {
         UnitId(int(unit_id_str)): deserialize_expected_trajectory(trajectory)
-        for unit_id_str, trajectory in data["expected_trajectories"].items()
+        for unit_id_str, trajectory in data.get("expected_trajectories", {}).items()
     }
 
-    knowledge.last_observations = {}
-    for pos_str, value in data["last_observations"].items():
-        x, y = pos_str.split(",")
-        pos = Pos(int(x), int(y))
-        knowledge.last_observations[pos] = (
-            Timestamp(value["timestamp"]),
-            [deserialize_cell_contents(c) for c in value["contents"]],
-        )
+    knowledge.own_units_in_base = {
+        UnitId(int(unit_id_str)): deserialize_unit(unit_data)
+        for unit_id_str, unit_data in data.get("own_units_in_base", {}).items()
+    }
 
     return knowledge

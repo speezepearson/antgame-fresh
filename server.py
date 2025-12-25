@@ -7,6 +7,7 @@ from aiohttp import web
 from typing import Any
 
 from mechanics import Team, UnitId, GameState
+from planning import PlanningMind
 from knowledge import PlayerKnowledge
 from serialization import (
     serialize_player_knowledge,
@@ -117,7 +118,15 @@ class GameServer:
             return web.json_response({"error": f"Invalid plan data: {e}"}, status=400)
 
         try:
-            self.state.set_unit_plan(UnitId(int(unit_id_str)), plan)
+            unit_id = UnitId(int(unit_id_str))
+            unit = self.state.units.get(unit_id)
+            if unit is None:
+                return web.json_response({"error": f"Unit {unit_id} not found"}, status=400)
+            if unit.team != team:
+                return web.json_response({"error": f"Unit {unit_id} does not belong to team {team.name}"}, status=400)
+            if not isinstance(unit.mind, PlanningMind):
+                return web.json_response({"error": f"Unit {unit_id} does not have a PlanningMind"}, status=400)
+            unit.mind.plan = plan
             return web.json_response({"success": True})
         except Exception as e:
             return web.json_response({"error": f"Failed to set plan: {e}"}, status=400)
