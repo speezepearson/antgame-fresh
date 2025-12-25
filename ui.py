@@ -155,6 +155,8 @@ class PlanControls:
     issue_plan_btn: pygame_gui.elements.UIButton
     clear_plan_btn: pygame_gui.elements.UIButton
     selection_label: pygame_gui.elements.UILabel
+    interrupt_checkboxes: dict[str, pygame_gui.elements.UICheckBox] = field(default_factory=dict)
+    interrupt_container: pygame_gui.elements.UIScrollingContainer | None = None
 
 
 @dataclass
@@ -1273,6 +1275,28 @@ def handle_events(ctx: GameContext) -> bool:
                 if view.editor_controls is not None and event.ui_element == view.editor_controls.window:
                     view.editor_controls = None
 
+        # Handle interrupt checkbox changes
+        if event.type == pygame_gui.UI_BUTTON_PRESSED:
+            for team in Team:
+                view = ctx.views[team]
+                if view.plan_controls is not None and view.working_plan is not None:
+                    knowledge = ctx.client.get_player_knowledge(team, ctx.client.get_current_tick())
+                    # Check if the event is from one of our interrupt checkboxes
+                    for int_name, checkbox in view.plan_controls.interrupt_checkboxes.items():
+                        if event.ui_element == checkbox:
+                            # Toggle this interrupt in the working plan based on checkbox state
+                            interrupt = knowledge.interrupt_library.get(int_name)
+                            if interrupt:
+                                if checkbox.is_checked:
+                                    # Add interrupt if not already present
+                                    if interrupt not in view.working_plan.interrupts:
+                                        view.working_plan.interrupts.append(interrupt)
+                                else:
+                                    # Remove interrupt if present
+                                    if interrupt in view.working_plan.interrupts:
+                                        view.working_plan.interrupts.remove(interrupt)
+                            break
+
         for team in Team:
             view = ctx.views[team]
 
@@ -1522,8 +1546,9 @@ def draw_ui(ctx: GameContext) -> None:
 
     # Plan area layout
     plan_y = ctx.slider_y + 30
-    plan_box_height = 180
-    btn_y = plan_y + plan_box_height + 5
+    interrupts_height = 120
+    plan_box_height = 180 - interrupts_height
+    btn_y = plan_y + interrupts_height + plan_box_height + 5
     selection_label_y = ctx.slider_y
 
     # Handle plan controls for each team
@@ -1549,6 +1574,8 @@ def draw_ui(ctx: GameContext) -> None:
                     view.plan_controls.issue_plan_btn.kill()  # type: ignore[no-untyped-call]
                     view.plan_controls.clear_plan_btn.kill()  # type: ignore[no-untyped-call]
                     view.plan_controls.selection_label.hide()  # type: ignore[no-untyped-call]
+                    if view.plan_controls.interrupt_container:
+                        view.plan_controls.interrupt_container.kill()  # type: ignore[no-untyped-call]
                     view.plan_controls = None
                 continue
 
@@ -1563,10 +1590,35 @@ def draw_ui(ctx: GameContext) -> None:
                     text="",
                     manager=ctx.ui_manager,
                 )
+
+                # Interrupt selection container
+                interrupt_container = pygame_gui.elements.UIScrollingContainer(
+                    relative_rect=pygame.Rect(
+                        plan_offset_x, plan_y, ctx.map_pixel_size, interrupts_height
+                    ),
+                    manager=ctx.ui_manager,
+                )
+
+                # Create checkboxes for each interrupt in library
+                interrupt_checkboxes: dict[str, pygame_gui.elements.UICheckBox] = {}
+                y_off = 0
+                for int_name in sorted(knowledge.interrupt_library.keys()):
+                    # Create checkbox with label
+                    checkbox = pygame_gui.elements.UICheckBox(
+                        relative_rect=pygame.Rect(5, y_off, ctx.map_pixel_size - 20, 25),
+                        text=int_name,
+                        manager=ctx.ui_manager,
+                        container=interrupt_container,
+                    )
+                    interrupt_checkboxes[int_name] = checkbox
+                    y_off += 30
+
+                interrupt_container.set_scrollable_area_dimensions((ctx.map_pixel_size - 20, max(y_off, interrupts_height)))
+
                 text_box = pygame_gui.elements.UITextBox(
                     html_text="",
                     relative_rect=pygame.Rect(
-                        plan_offset_x, plan_y, ctx.map_pixel_size, plan_box_height
+                        plan_offset_x, plan_y + interrupts_height, ctx.map_pixel_size, plan_box_height
                     ),
                     manager=ctx.ui_manager,
                     wrap_to_height=False,
@@ -1587,6 +1639,8 @@ def draw_ui(ctx: GameContext) -> None:
                     issue_plan_btn=issue_plan_btn,
                     clear_plan_btn=clear_plan_btn,
                     selection_label=selection_label,
+                    interrupt_checkboxes=interrupt_checkboxes,
+                    interrupt_container=interrupt_container,
                 )
 
             # Update selection label
@@ -1594,6 +1648,23 @@ def draw_ui(ctx: GameContext) -> None:
                 f"Selected: {team_name} unit - click {team_name}'s map to add waypoints"
             )
             view.plan_controls.selection_label.show()  # type: ignore[no-untyped-call]
+
+            # Update interrupt selections based on working plan
+            if view.working_plan is not None:
+                active_interrupt_names = set()
+                for interrupt in view.working_plan.interrupts:
+                    # Find the name of this interrupt in the library
+                    for name, lib_interrupt in knowledge.interrupt_library.items():
+                        if lib_interrupt is interrupt:
+                            active_interrupt_names.add(name)
+                            break
+
+                # Update checkbox states
+                for int_name, checkbox in view.plan_controls.interrupt_checkboxes.items():
+                    should_be_checked = int_name in active_interrupt_names
+
+                    if checkbox.is_checked != should_be_checked:
+                        checkbox.set_state(should_be_checked)
 
             # Display the working plan in a scrollable text box
             if view.working_plan is not None:
