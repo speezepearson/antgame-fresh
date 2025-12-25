@@ -525,18 +525,6 @@ def make_initial_working_plan_interrupts() -> list[Interrupt[Any]]:
     )
 
 
-def set_checkbox_appearance(checkbox: arcade.gui.UIFlatButton, checked: bool, label: str) -> None:
-    """Update checkbox text and background color based on checked state."""
-    checkbox.text = f"{"☑" if checked else "☐"} {label}"
-    # Set background color: green tint for checked, default gray for unchecked
-    if checked:
-        checkbox.style["bg_color"] = (60, 100, 60)
-        checkbox.style["bg_color_hover"] = (70, 120, 70)
-    else:
-        checkbox.style["bg_color"] = (60, 60, 60)
-        checkbox.style["bg_color_hover"] = (80, 80, 80)
-
-
 class AntGameWindow(arcade.Window):
     """Main window for the Ant RTS game."""
 
