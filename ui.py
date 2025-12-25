@@ -70,7 +70,7 @@ class PlanControls:
 @dataclass
 class PlayerView:
     knowledge: PlayerKnowledge
-    tick_controls: TickControls
+    tick_controls: TickControls | None = None
     plan_controls: PlanControls | None = None
     freeze_frame: Timestamp | None = None
     selected_unit_id: UnitId | None = None
@@ -546,22 +546,24 @@ class AntGameWindow(arcade.Window):
         current_tick = self.game_ctx.client.get_current_tick()
         if current_tick > 0:
             red_view = self.game_ctx.views[Team.RED]
-            red_view_tick = red_view.freeze_frame
-            if red_view_tick is None:
-                red_view.tick_controls.slider.value = 1.0
-                red_view.tick_controls.tick_label.text = f"t={current_tick}"
-            else:
-                red_view.tick_controls.slider.value = red_view_tick / current_tick
-                red_view.tick_controls.tick_label.text = f"t={red_view_tick}"
+            if red_view.tick_controls:
+                red_view_tick = red_view.freeze_frame
+                if red_view_tick is None:
+                    red_view.tick_controls.slider.value = 1.0
+                    red_view.tick_controls.tick_label.text = f"t={current_tick}"
+                else:
+                    red_view.tick_controls.slider.value = red_view_tick / current_tick
+                    red_view.tick_controls.tick_label.text = f"t={red_view_tick}"
 
             blue_view = self.game_ctx.views[Team.BLUE]
-            blue_view_tick = blue_view.freeze_frame
-            if blue_view_tick is None:
-                blue_view.tick_controls.slider.value = 1.0
-                blue_view.tick_controls.tick_label.text = f"t={current_tick}"
-            else:
-                blue_view.tick_controls.slider.value = blue_view_tick / current_tick
-                blue_view.tick_controls.tick_label.text = f"t={blue_view_tick}"
+            if blue_view.tick_controls:
+                blue_view_tick = blue_view.freeze_frame
+                if blue_view_tick is None:
+                    blue_view.tick_controls.slider.value = 1.0
+                    blue_view.tick_controls.tick_label.text = f"t={current_tick}"
+                else:
+                    blue_view.tick_controls.slider.value = blue_view_tick / current_tick
+                    blue_view.tick_controls.tick_label.text = f"t={blue_view_tick}"
 
         # Handle plan controls for each team
         for team in Team:
@@ -823,28 +825,6 @@ def initialize_game() -> tuple[GameContext, AntGameWindow]:
         Team.BLUE: blue_offset_x,
     }
 
-    # Create time sliders for RED team
-    red_slider = arcade.gui.UISlider(value=0, min_value=0, max_value=1, width=slider_width, height=20)
-    red_tick_label = arcade.gui.UILabel(text="t=0", width=45, height=20)
-    red_live_btn = arcade.gui.UIFlatButton(text="LIVE", width=50, height=20)
-
-    red_tick_controls = TickControls(
-        slider=red_slider,
-        tick_label=red_tick_label,
-        live_btn=red_live_btn,
-    )
-
-    # Create time sliders for BLUE team
-    blue_slider = arcade.gui.UISlider(value=0, min_value=0, max_value=1, width=slider_width, height=20)
-    blue_tick_label = arcade.gui.UILabel(text="t=0", width=45, height=20)
-    blue_live_btn = arcade.gui.UIFlatButton(text="LIVE", width=50, height=20)
-
-    blue_tick_controls = TickControls(
-        slider=blue_slider,
-        tick_label=blue_tick_label,
-        live_btn=blue_live_btn,
-    )
-
     tick_interval = 200
     last_tick = 0.0
 
@@ -860,7 +840,6 @@ def initialize_game() -> tuple[GameContext, AntGameWindow]:
         if client_team == Team.RED:
             red_view = PlayerView(
                 knowledge=initial_knowledge,
-                tick_controls=red_tick_controls,
             )
             # Create a dummy blue view (won't be visible)
             blue_view = PlayerView(
@@ -870,7 +849,6 @@ def initialize_game() -> tuple[GameContext, AntGameWindow]:
                     grid_height=grid_height,
                     tick=Timestamp(0),
                 ),
-                tick_controls=blue_tick_controls,
             )
         else:
             # Create a dummy red view (won't be visible)
@@ -881,11 +859,9 @@ def initialize_game() -> tuple[GameContext, AntGameWindow]:
                     grid_height=grid_height,
                     tick=Timestamp(0),
                 ),
-                tick_controls=red_tick_controls,
             )
             blue_view = PlayerView(
                 knowledge=initial_knowledge,
-                tick_controls=blue_tick_controls,
             )
     else:
         # Local or server mode: create views for both teams
@@ -898,7 +874,6 @@ def initialize_game() -> tuple[GameContext, AntGameWindow]:
                 grid_height=grid_height,
                 tick=state.tick,
             ),
-            tick_controls=red_tick_controls,
         )
         blue_view = PlayerView(
             knowledge=PlayerKnowledge(
@@ -907,7 +882,6 @@ def initialize_game() -> tuple[GameContext, AntGameWindow]:
                 grid_height=grid_height,
                 tick=state.tick,
             ),
-            tick_controls=blue_tick_controls,
         )
 
         # Create LocalClient
@@ -947,13 +921,40 @@ def initialize_game() -> tuple[GameContext, AntGameWindow]:
         start_time=0.0,  # Will be set by window
     )
 
-    # Create window first (required for UIManager)
+    # Create window first (required for UIManager and widgets)
     window = AntGameWindow(ctx, window_width, window_height)
 
     # Now create UIManager with the window
     ui_manager = arcade.gui.UIManager()
     ctx.ui_manager = ui_manager
     ui_manager.enable()
+
+    # Now that window exists, create UI widgets
+    # Create time sliders for RED team
+    red_slider = arcade.gui.UISlider(value=0, min_value=0, max_value=1, width=slider_width, height=20)
+    red_tick_label = arcade.gui.UILabel(text="t=0", width=45, height=20)
+    red_live_btn = arcade.gui.UIFlatButton(text="LIVE", width=50, height=20)
+
+    red_tick_controls = TickControls(
+        slider=red_slider,
+        tick_label=red_tick_label,
+        live_btn=red_live_btn,
+    )
+
+    # Create time sliders for BLUE team
+    blue_slider = arcade.gui.UISlider(value=0, min_value=0, max_value=1, width=slider_width, height=20)
+    blue_tick_label = arcade.gui.UILabel(text="t=0", width=45, height=20)
+    blue_live_btn = arcade.gui.UIFlatButton(text="LIVE", width=50, height=20)
+
+    blue_tick_controls = TickControls(
+        slider=blue_slider,
+        tick_label=blue_tick_label,
+        live_btn=blue_live_btn,
+    )
+
+    # Assign tick controls to views
+    ctx.views[Team.RED].tick_controls = red_tick_controls
+    ctx.views[Team.BLUE].tick_controls = blue_tick_controls
 
     # Add slider event handlers
     def on_red_slider_change(event: Any) -> None:
