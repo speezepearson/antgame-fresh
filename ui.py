@@ -162,15 +162,10 @@ class InterruptLibraryControls:
     """UI controls for interrupt library management."""
 
     window: pygame_gui.elements.UIWindow
-    interrupt_list: pygame_gui.elements.UITextBox
-    interrupt_selector: pygame_gui.elements.UIDropDownMenu
+    interrupt_rows: dict[str, tuple[pygame_gui.elements.UIButton, ...]]  # name -> (edit, delete, rename, dup buttons)
+    scroll_container: pygame_gui.elements.UIScrollingContainer
     new_btn: pygame_gui.elements.UIButton
-    edit_btn: pygame_gui.elements.UIButton
-    delete_btn: pygame_gui.elements.UIButton
-    rename_btn: pygame_gui.elements.UIButton
-    duplicate_btn: pygame_gui.elements.UIButton
     close_btn: pygame_gui.elements.UIButton
-    selected_interrupt_name: str | None = None
 
 
 @dataclass
@@ -180,14 +175,17 @@ class InterruptEditorControls:
     window: pygame_gui.elements.UIWindow
     name_entry: pygame_gui.elements.UITextEntryLine
     condition_dropdown: pygame_gui.elements.UIDropDownMenu
+    condition_param_labels: dict[str, pygame_gui.elements.UILabel]
     condition_param_entries: dict[str, pygame_gui.elements.UITextEntryLine]
     action_list: pygame_gui.elements.UITextBox
+    add_action_dropdown: pygame_gui.elements.UIDropDownMenu
     add_action_btn: pygame_gui.elements.UIButton
     remove_action_btn: pygame_gui.elements.UIButton
     save_btn: pygame_gui.elements.UIButton
     cancel_btn: pygame_gui.elements.UIButton
     selected_condition_type: ConditionType | None = None
     selected_actions: list[tuple[ActionType, dict[str, Any]]] = field(default_factory=list)
+    original_interrupt_name: str = ""
 
 
 @dataclass
@@ -658,9 +656,9 @@ def create_simple_interrupt_editor(
 ) -> InterruptEditorControls:
     """Create a simple interrupt editor dialog."""
     window_width = 500
-    window_height = 500
+    window_height = 600
     window = pygame_gui.elements.UIWindow(
-        rect=pygame.Rect(150, 150, window_width, window_height),
+        rect=pygame.Rect(150, 50, window_width, window_height),
         manager=ctx.ui_manager,
         window_display_title=f"Edit Interrupt: {interrupt_name}",
     )
@@ -671,23 +669,26 @@ def create_simple_interrupt_editor(
     if interrupt is None:
         raise ValueError(f"Interrupt '{interrupt_name}' not found in library")
 
+    y_offset = 10
+
     # Name entry
     pygame_gui.elements.UILabel(
-        relative_rect=pygame.Rect(10, 10, 100, 25),
+        relative_rect=pygame.Rect(10, y_offset, 100, 25),
         text="Name:",
         manager=ctx.ui_manager,
         container=window,
     )
     name_entry = pygame_gui.elements.UITextEntryLine(
-        relative_rect=pygame.Rect(120, 10, window_width - 140, 25),
+        relative_rect=pygame.Rect(120, y_offset, window_width - 140, 25),
         manager=ctx.ui_manager,
         container=window,
     )
     name_entry.set_text(interrupt_name)
+    y_offset += 40
 
     # Condition dropdown
     pygame_gui.elements.UILabel(
-        relative_rect=pygame.Rect(10, 50, 100, 25),
+        relative_rect=pygame.Rect(10, y_offset, 100, 25),
         text="Condition:",
         manager=ctx.ui_manager,
         container=window,
@@ -696,49 +697,101 @@ def create_simple_interrupt_editor(
 
     # Find current condition type
     current_condition = None
+    selected_condition_type = None
     for ct in CONDITION_TYPES:
         if type(interrupt.condition) == ct.factory:
             current_condition = ct.name
+            selected_condition_type = ct
             break
     if current_condition is None:
         current_condition = condition_options[0]
+        selected_condition_type = CONDITION_TYPES[0]
 
     condition_dropdown = pygame_gui.elements.UIDropDownMenu(
         options_list=list(condition_options),
         starting_option=current_condition,
-        relative_rect=pygame.Rect(120, 50, window_width - 140, 30),
+        relative_rect=pygame.Rect(120, y_offset, window_width - 140, 30),
         manager=ctx.ui_manager,
         container=window,
     )
+    y_offset += 40
+
+    # Condition parameters
+    condition_param_labels: dict[str, pygame_gui.elements.UILabel] = {}
+    condition_param_entries: dict[str, pygame_gui.elements.UITextEntryLine] = {}
+
+    if selected_condition_type and selected_condition_type.param_specs:
+        for param_name, param_type in selected_condition_type.param_specs.items():
+            label = pygame_gui.elements.UILabel(
+                relative_rect=pygame.Rect(30, y_offset, 100, 25),
+                text=f"{param_name}:",
+                manager=ctx.ui_manager,
+                container=window,
+            )
+
+            # Get current value from interrupt
+            current_value = ""
+            if hasattr(interrupt.condition, param_name):
+                val = getattr(interrupt.condition, param_name)
+                if isinstance(val, Pos):
+                    current_value = f"{val.x},{val.y}"
+                else:
+                    current_value = str(val)
+
+            entry = pygame_gui.elements.UITextEntryLine(
+                relative_rect=pygame.Rect(140, y_offset, window_width - 160, 25),
+                manager=ctx.ui_manager,
+                container=window,
+            )
+            entry.set_text(current_value)
+
+            condition_param_labels[param_name] = label
+            condition_param_entries[param_name] = entry
+            y_offset += 35
 
     # Action list display
     pygame_gui.elements.UILabel(
-        relative_rect=pygame.Rect(10, 100, 100, 25),
+        relative_rect=pygame.Rect(10, y_offset, 100, 25),
         text="Actions:",
         manager=ctx.ui_manager,
         container=window,
     )
+    y_offset += 30
+
     action_list = pygame_gui.elements.UITextBox(
         html_text="",
-        relative_rect=pygame.Rect(10, 130, window_width - 20, 200),
+        relative_rect=pygame.Rect(10, y_offset, window_width - 20, 150),
+        manager=ctx.ui_manager,
+        container=window,
+    )
+    y_offset += 160
+
+    # Action controls
+    compatible_actions = get_compatible_actions(selected_condition_type.return_type) if selected_condition_type else ACTION_TYPES
+    action_options = [at.name for at in compatible_actions]
+
+    add_action_dropdown = pygame_gui.elements.UIDropDownMenu(
+        options_list=list(action_options) if action_options else ["(none)"],
+        starting_option=action_options[0] if action_options else "(none)",
+        relative_rect=pygame.Rect(10, y_offset, 200, 30),
         manager=ctx.ui_manager,
         container=window,
     )
 
-    # Action controls
     add_action_btn = pygame_gui.elements.UIButton(
-        relative_rect=pygame.Rect(10, 340, 100, 25),
-        text="Add Action",
+        relative_rect=pygame.Rect(220, y_offset, 100, 25),
+        text="Add ➕",
         manager=ctx.ui_manager,
         container=window,
     )
 
     remove_action_btn = pygame_gui.elements.UIButton(
-        relative_rect=pygame.Rect(120, 340, 120, 25),
-        text="Remove Last",
+        relative_rect=pygame.Rect(330, y_offset, 120, 25),
+        text="Remove ❌",
         manager=ctx.ui_manager,
         container=window,
     )
+    y_offset += 40
 
     # Save and cancel buttons
     save_btn = pygame_gui.elements.UIButton(
@@ -755,13 +808,6 @@ def create_simple_interrupt_editor(
         container=window,
     )
 
-    # Find current condition type for compatibility
-    selected_condition_type = None
-    for ct in CONDITION_TYPES:
-        if ct.name == current_condition:
-            selected_condition_type = ct
-            break
-
     # Convert current actions to (ActionType, params) tuples
     selected_actions: list[tuple[ActionType, dict[str, Any]]] = []
     for action in interrupt.actions:
@@ -774,14 +820,17 @@ def create_simple_interrupt_editor(
         window=window,
         name_entry=name_entry,
         condition_dropdown=condition_dropdown,
-        condition_param_entries={},
+        condition_param_labels=condition_param_labels,
+        condition_param_entries=condition_param_entries,
         action_list=action_list,
+        add_action_dropdown=add_action_dropdown,
         add_action_btn=add_action_btn,
         remove_action_btn=remove_action_btn,
         save_btn=save_btn,
         cancel_btn=cancel_btn,
         selected_condition_type=selected_condition_type,
         selected_actions=selected_actions,
+        original_interrupt_name=interrupt_name,
     )
 
 
@@ -789,77 +838,100 @@ def create_interrupt_library_window(
     ctx: GameContext, team: Team
 ) -> InterruptLibraryControls:
     """Create a window showing the interrupt library for a team."""
-    window_width = 600
-    window_height = 450
+    window_width = 700
+    window_height = 500
     window = pygame_gui.elements.UIWindow(
         rect=pygame.Rect(100, 100, window_width, window_height),
         manager=ctx.ui_manager,
         window_display_title=f"{team.value} Interrupt Library",
     )
 
-    # Interrupt selector dropdown
     view = ctx.views[team]
-    interrupt_names = sorted(view.knowledge.interrupt_library.keys()) if view.knowledge.interrupt_library else ["(none)"]
 
-    interrupt_selector = pygame_gui.elements.UIDropDownMenu(
-        options_list=list(interrupt_names),
-        starting_option=interrupt_names[0],
-        relative_rect=pygame.Rect(10, 10, window_width - 20, 30),
+    # Scrolling container for interrupt rows
+    scroll_container = pygame_gui.elements.UIScrollingContainer(
+        relative_rect=pygame.Rect(10, 10, window_width - 20, window_height - 80),
         manager=ctx.ui_manager,
         container=window,
     )
 
-    # Interrupt list text box
-    interrupt_list = pygame_gui.elements.UITextBox(
-        html_text="",
-        relative_rect=pygame.Rect(10, 50, window_width - 20, window_height - 140),
-        manager=ctx.ui_manager,
-        container=window,
-    )
+    # Create rows for each interrupt
+    interrupt_rows: dict[str, tuple[pygame_gui.elements.UIButton, ...]] = {}
+    y_offset = 0
+    row_height = 60
 
-    # Buttons
-    btn_y = window_height - 80
-    btn_width = 80
-    btn_height = 25
-    btn_spacing = 10
+    for name in sorted(view.knowledge.interrupt_library.keys()):
+        interrupt = view.knowledge.interrupt_library[name]
+
+        # Interrupt name and description
+        condition_desc = interrupt.condition.description
+        actions_desc = "; ".join([action.description for action in interrupt.actions])
+        text = f"<b>{name}</b><br><font size=2>When {condition_desc}: {actions_desc}</font>"
+
+        pygame_gui.elements.UITextBox(
+            html_text=text,
+            relative_rect=pygame.Rect(5, y_offset, window_width - 250, row_height - 5),
+            manager=ctx.ui_manager,
+            container=scroll_container,
+        )
+
+        # Action buttons with emojis
+        btn_width = 50
+        btn_x = window_width - 240
+
+        edit_btn = pygame_gui.elements.UIButton(
+            relative_rect=pygame.Rect(btn_x, y_offset + 15, btn_width, 30),
+            text="✏️",
+            manager=ctx.ui_manager,
+            container=scroll_container,
+            tool_tip_text="Edit",
+        )
+        btn_x += btn_width + 5
+
+        duplicate_btn = pygame_gui.elements.UIButton(
+            relative_rect=pygame.Rect(btn_x, y_offset + 15, btn_width, 30),
+            text="📋",
+            manager=ctx.ui_manager,
+            container=scroll_container,
+            tool_tip_text="Duplicate",
+        )
+        btn_x += btn_width + 5
+
+        rename_btn = pygame_gui.elements.UIButton(
+            relative_rect=pygame.Rect(btn_x, y_offset + 15, btn_width, 30),
+            text="✍️",
+            manager=ctx.ui_manager,
+            container=scroll_container,
+            tool_tip_text="Rename",
+        )
+        btn_x += btn_width + 5
+
+        delete_btn = pygame_gui.elements.UIButton(
+            relative_rect=pygame.Rect(btn_x, y_offset + 15, btn_width, 30),
+            text="🗑️",
+            manager=ctx.ui_manager,
+            container=scroll_container,
+            tool_tip_text="Delete",
+        )
+
+        interrupt_rows[name] = (edit_btn, duplicate_btn, rename_btn, delete_btn)
+        y_offset += row_height
+
+    # Set scrollable area height
+    scroll_container.set_scrollable_area_dimensions((window_width - 40, max(y_offset, window_height - 100)))
+
+    # Bottom buttons
+    btn_y = window_height - 60
 
     new_btn = pygame_gui.elements.UIButton(
-        relative_rect=pygame.Rect(10, btn_y, btn_width, btn_height),
-        text="New",
-        manager=ctx.ui_manager,
-        container=window,
-    )
-
-    edit_btn = pygame_gui.elements.UIButton(
-        relative_rect=pygame.Rect(10 + (btn_width + btn_spacing) * 1, btn_y, btn_width, btn_height),
-        text="Edit",
-        manager=ctx.ui_manager,
-        container=window,
-    )
-
-    delete_btn = pygame_gui.elements.UIButton(
-        relative_rect=pygame.Rect(10 + (btn_width + btn_spacing) * 2, btn_y, btn_width, btn_height),
-        text="Delete",
-        manager=ctx.ui_manager,
-        container=window,
-    )
-
-    rename_btn = pygame_gui.elements.UIButton(
-        relative_rect=pygame.Rect(10 + (btn_width + btn_spacing) * 3, btn_y, btn_width, btn_height),
-        text="Rename",
-        manager=ctx.ui_manager,
-        container=window,
-    )
-
-    duplicate_btn = pygame_gui.elements.UIButton(
-        relative_rect=pygame.Rect(10 + (btn_width + btn_spacing) * 4, btn_y, btn_width, btn_height),
-        text="Duplicate",
+        relative_rect=pygame.Rect(10, btn_y, 100, 30),
+        text="➕ New",
         manager=ctx.ui_manager,
         container=window,
     )
 
     close_btn = pygame_gui.elements.UIButton(
-        relative_rect=pygame.Rect(10 + (btn_width + btn_spacing) * 5, btn_y, btn_width, btn_height),
+        relative_rect=pygame.Rect(window_width - 110, btn_y, 100, 30),
         text="Close",
         manager=ctx.ui_manager,
         container=window,
@@ -867,15 +939,10 @@ def create_interrupt_library_window(
 
     return InterruptLibraryControls(
         window=window,
-        interrupt_list=interrupt_list,
-        interrupt_selector=interrupt_selector,
+        interrupt_rows=interrupt_rows,
+        scroll_container=scroll_container,
         new_btn=new_btn,
-        edit_btn=edit_btn,
-        delete_btn=delete_btn,
-        rename_btn=rename_btn,
-        duplicate_btn=duplicate_btn,
         close_btn=close_btn,
-        selected_interrupt_name=interrupt_names[0] if interrupt_names[0] != "(none)" else None,
     )
 
 
@@ -1206,14 +1273,6 @@ def handle_events(ctx: GameContext) -> bool:
                 if view.editor_controls is not None and event.ui_element == view.editor_controls.window:
                     view.editor_controls = None
 
-        # Handle dropdown selection changes
-        if event.type == pygame_gui.UI_DROP_DOWN_MENU_CHANGED:
-            for team in Team:
-                view = ctx.views[team]
-                if view.library_controls is not None and event.ui_element == view.library_controls.interrupt_selector:
-                    selected = event.text
-                    view.library_controls.selected_interrupt_name = selected if selected != "(none)" else None
-
         for team in Team:
             view = ctx.views[team]
 
@@ -1236,30 +1295,39 @@ def handle_events(ctx: GameContext) -> bool:
                             condition=IdleCondition(),
                             actions=[MoveHomeAction()],
                         )
-                    elif event.ui_element == view.library_controls.edit_btn:
-                        # Open interrupt editor for selected interrupt
-                        if view.library_controls.selected_interrupt_name and view.editor_controls is None:
-                            view.editor_controls = create_simple_interrupt_editor(
-                                ctx, team, view.library_controls.selected_interrupt_name
-                            )
-                    elif event.ui_element == view.library_controls.delete_btn:
-                        # Delete the selected interrupt
-                        if view.library_controls.selected_interrupt_name:
-                            del view.knowledge.interrupt_library[view.library_controls.selected_interrupt_name]
-                    elif event.ui_element == view.library_controls.rename_btn:
-                        # Rename - for now just append "_renamed" (TODO: proper dialog)
-                        if view.library_controls.selected_interrupt_name:
-                            old_interrupt_name = view.library_controls.selected_interrupt_name
-                            new_interrupt_name = f"{old_interrupt_name}_renamed"
-                            interrupt = view.knowledge.interrupt_library[old_interrupt_name]
-                            del view.knowledge.interrupt_library[old_interrupt_name]
-                            view.knowledge.interrupt_library[new_interrupt_name] = interrupt
-                    elif event.ui_element == view.library_controls.duplicate_btn:
-                        # Duplicate the selected interrupt
-                        if view.library_controls.selected_interrupt_name:
-                            interrupt = view.knowledge.interrupt_library[view.library_controls.selected_interrupt_name]
-                            new_name = f"{view.library_controls.selected_interrupt_name}_copy"
-                            view.knowledge.interrupt_library[new_name] = interrupt
+                        # Recreate library window to show new interrupt
+                        view.library_controls.window.kill()  # type: ignore[no-untyped-call]
+                        view.library_controls = create_interrupt_library_window(ctx, team)
+                    else:
+                        # Check if any per-interrupt button was clicked
+                        for int_name, (edit_btn, dup_btn, ren_btn, del_btn) in view.library_controls.interrupt_rows.items():
+                            if event.ui_element == edit_btn:
+                                if view.editor_controls is None:
+                                    view.editor_controls = create_simple_interrupt_editor(ctx, team, int_name)
+                                break
+                            elif event.ui_element == del_btn:
+                                del view.knowledge.interrupt_library[int_name]
+                                # Recreate library window
+                                view.library_controls.window.kill()  # type: ignore[no-untyped-call]
+                                view.library_controls = create_interrupt_library_window(ctx, team)
+                                break
+                            elif event.ui_element == ren_btn:
+                                new_name = f"{int_name}_renamed"
+                                interrupt = view.knowledge.interrupt_library[int_name]
+                                del view.knowledge.interrupt_library[int_name]
+                                view.knowledge.interrupt_library[new_name] = interrupt
+                                # Recreate library window
+                                view.library_controls.window.kill()  # type: ignore[no-untyped-call]
+                                view.library_controls = create_interrupt_library_window(ctx, team)
+                                break
+                            elif event.ui_element == dup_btn:
+                                interrupt = view.knowledge.interrupt_library[int_name]
+                                new_name = f"{int_name}_copy"
+                                view.knowledge.interrupt_library[new_name] = interrupt
+                                # Recreate library window
+                                view.library_controls.window.kill()  # type: ignore[no-untyped-call]
+                                view.library_controls = create_interrupt_library_window(ctx, team)
+                                break
 
                 # Handle editor control buttons
                 if view.editor_controls is not None:
@@ -1268,21 +1336,28 @@ def handle_events(ctx: GameContext) -> bool:
                         view.editor_controls = None
                     elif event.ui_element == view.editor_controls.save_btn:
                         # Save the edited interrupt
-                        old_name: str | None = view.library_controls.selected_interrupt_name if view.library_controls else None
+                        old_name = view.editor_controls.original_interrupt_name
                         new_name = view.editor_controls.name_entry.get_text()
 
-                        # Build condition based on selected type
+                        # Build condition based on selected type and parameters
                         condition: Condition[Any] | None = None
                         if view.editor_controls.selected_condition_type:
                             ct = view.editor_controls.selected_condition_type
                             if ct.param_specs:
-                                # For now, use default parameters
-                                if ct.name == "Enemy in Range":
-                                    condition = EnemyInRangeCondition(distance=2)
-                                elif ct.name == "Food in Range":
-                                    condition = FoodInRangeCondition(distance=2)
-                                elif ct.name == "Position Reached":
-                                    condition = PositionReachedCondition(position=Pos(0, 0))
+                                # Read parameters from entries
+                                params: dict[str, Any] = {}
+                                for param_name, param_type in ct.param_specs.items():
+                                    if param_name in view.editor_controls.condition_param_entries:
+                                        value_str = view.editor_controls.condition_param_entries[param_name].get_text()
+                                        if param_type == int:
+                                            params[param_name] = int(value_str) if value_str.isdigit() else 2
+                                        elif param_type == Pos:
+                                            parts = value_str.split(',')
+                                            if len(parts) == 2:
+                                                params[param_name] = Pos(int(parts[0]), int(parts[1]))
+                                            else:
+                                                params[param_name] = Pos(0, 0)
+                                condition = ct.factory(**params)
                             else:
                                 condition = ct.factory()
 
@@ -1293,19 +1368,27 @@ def handle_events(ctx: GameContext) -> bool:
                             new_interrupt = Interrupt(condition=condition, actions=actions)
 
                             # Remove old entry if name changed
-                            if old_name and old_name != new_name and old_name in view.knowledge.interrupt_library:
+                            if old_name != new_name and old_name in view.knowledge.interrupt_library:
                                 del view.knowledge.interrupt_library[old_name]
 
                             view.knowledge.interrupt_library[new_name] = new_interrupt
 
+                            # Refresh library window if open
+                            if view.library_controls is not None:
+                                view.library_controls.window.kill()  # type: ignore[no-untyped-call]
+                                view.library_controls = create_interrupt_library_window(ctx, team)
+
                         view.editor_controls.window.kill()  # type: ignore[no-untyped-call]
                         view.editor_controls = None
                     elif event.ui_element == view.editor_controls.add_action_btn:
-                        # Add a compatible action
+                        # Add the selected action from dropdown
                         if view.editor_controls.selected_condition_type:
+                            selected_action_name = view.editor_controls.add_action_dropdown.selected_option[0]
                             compatible = get_compatible_actions(view.editor_controls.selected_condition_type.return_type)
-                            if compatible:
-                                view.editor_controls.selected_actions.append((compatible[0], {}))
+                            for at in compatible:
+                                if at.name == selected_action_name:
+                                    view.editor_controls.selected_actions.append((at, {}))
+                                    break
                     elif event.ui_element == view.editor_controls.remove_action_btn:
                         # Remove last action
                         if view.editor_controls.selected_actions:
@@ -1537,23 +1620,6 @@ def draw_ui(ctx: GameContext) -> None:
                 view.plan_controls.clear_plan_btn.kill()  # type: ignore[no-untyped-call]
                 view.plan_controls.selection_label.hide()  # type: ignore[no-untyped-call]
                 view.plan_controls = None
-
-        # Update interrupt library window if open
-        if view.library_controls is not None:
-            library_html = format_interrupt_library(view.knowledge.interrupt_library)
-            view.library_controls.interrupt_list.set_text(library_html)
-            view.library_controls.interrupt_list.rebuild()
-
-            # Update dropdown options if library changed
-            current_names = sorted(view.knowledge.interrupt_library.keys()) if view.knowledge.interrupt_library else ["(none)"]
-            view.library_controls.interrupt_selector.kill()  # type: ignore[no-untyped-call]
-            view.library_controls.interrupt_selector = pygame_gui.elements.UIDropDownMenu(
-                options_list=list(current_names),
-                starting_option=view.library_controls.selected_interrupt_name if view.library_controls.selected_interrupt_name in current_names else current_names[0],
-                relative_rect=pygame.Rect(10, 10, 580, 30),
-                manager=ctx.ui_manager,
-                container=view.library_controls.window,
-            )
 
         # Update interrupt editor window if open
         if view.editor_controls is not None:
