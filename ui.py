@@ -511,7 +511,7 @@ def make_interrupts_from_checkboxes(
 def make_initial_working_plan_interrupts() -> list[Interrupt[Any]]:
     """Make the initial interrupts for a working plan (matches default checkbox states)."""
     return make_interrupts_from_checkboxes(
-        fight=False, flee=False, forage=True, come_back=True
+        fight=True, flee=True, forage=True, come_back=True
     )
 
 
@@ -855,8 +855,8 @@ def handle_events(ctx: GameContext) -> bool:
                                 interrupts=make_initial_working_plan_interrupts()
                             )
                             # Reset checkboxes to default states
-                            set_checkbox_appearance(view.plan_controls.fight_checkbox, False, "fight")
-                            set_checkbox_appearance(view.plan_controls.flee_checkbox, False, "flee")
+                            set_checkbox_appearance(view.plan_controls.fight_checkbox, True, "fight")
+                            set_checkbox_appearance(view.plan_controls.flee_checkbox, True, "flee")
                             set_checkbox_appearance(view.plan_controls.forage_checkbox, True, "forage")
                             set_checkbox_appearance(view.plan_controls.come_back_checkbox, True, "come back")
                         break
@@ -1119,17 +1119,17 @@ def draw_ui(ctx: GameContext) -> None:
 
                 fight_checkbox = pygame_gui.elements.UIButton(
                     relative_rect=pygame.Rect(plan_offset_x, checkbox_y, checkbox_width, 20),
-                    text="☐ fight",
+                    text="☑ fight",
                     manager=ctx.ui_manager,
                 )
-                set_checkbox_appearance(fight_checkbox, False, "fight")
+                set_checkbox_appearance(fight_checkbox, True, "fight")
 
                 flee_checkbox = pygame_gui.elements.UIButton(
                     relative_rect=pygame.Rect(plan_offset_x + checkbox_spacing, checkbox_y, checkbox_width, 20),
-                    text="☐ flee",
+                    text="☑ flee",
                     manager=ctx.ui_manager,
                 )
-                set_checkbox_appearance(flee_checkbox, False, "flee")
+                set_checkbox_appearance(flee_checkbox, True, "flee")
 
                 forage_checkbox = pygame_gui.elements.UIButton(
                     relative_rect=pygame.Rect(plan_offset_x + checkbox_spacing * 2, checkbox_y, checkbox_width, 20),
