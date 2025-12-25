@@ -273,15 +273,13 @@ class MoveStep:
         }[self.direction]
         unit.pos = Pos(unit.pos.x + dx, unit.pos.y + dy)
 
-        if unit.unit_type == UnitType.FIGHTER:
-            enemies = [other for other in state.units.values() if other.pos == unit.pos and other.team != unit.team]
-            for enemy in enemies:
-                if enemy.unit_type == UnitType.FIGHTER:
-                    kill_unit(state, enemy.id)
-                    kill_unit(state, unit.id)
-                    return
-            for enemy in enemies:
-                kill_unit(state, enemy.id)
+        enemies = [other for other in state.units.values() if other.pos == unit.pos and other.team != unit.team]
+        enemy_fighter = [e for e in enemies if e.unit_type == UnitType.FIGHTER][:1]
+        if unit.unit_type == UnitType.FIGHTER and enemies:
+            kill_unit(state, enemies[0].id)
+        if enemy_fighter:
+            kill_unit(state, unit.id)
+            return
 
         # If there's food at the new position, pick it up (unless it's in your own base)
         if unit.pos not in state.get_base_region(unit.team).cells:
