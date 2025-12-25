@@ -156,6 +156,7 @@ class PlanControls:
     clear_plan_btn: pygame_gui.elements.UIButton
     selection_label: pygame_gui.elements.UILabel
     interrupt_checkboxes: dict[str, pygame_gui.elements.UICheckBox] = field(default_factory=dict)
+    interrupt_labels: dict[str, pygame_gui.elements.UILabel] = field(default_factory=dict)
     interrupt_container: pygame_gui.elements.UIScrollingContainer | None = None
 
 
@@ -1632,16 +1633,26 @@ def draw_ui(ctx: GameContext) -> None:
 
                 # Create checkboxes for each interrupt in library
                 interrupt_checkboxes: dict[str, pygame_gui.elements.UICheckBox] = {}
+                interrupt_labels: dict[str, pygame_gui.elements.UILabel] = {}
                 y_off = 0
                 for int_name in sorted(knowledge.interrupt_library.keys()):
-                    # Create checkbox with label
+                    # Create checkbox (small square)
                     checkbox = pygame_gui.elements.UICheckBox(
-                        relative_rect=pygame.Rect(5, y_off, ctx.map_pixel_size - 20, 25),
-                        text=int_name,
+                        relative_rect=pygame.Rect(5, y_off, 25, 25),
+                        text="",
                         manager=ctx.ui_manager,
                         container=interrupt_container,
                     )
                     interrupt_checkboxes[int_name] = checkbox
+
+                    # Create label next to checkbox
+                    label = pygame_gui.elements.UILabel(
+                        relative_rect=pygame.Rect(35, y_off, ctx.map_pixel_size - 45, 25),
+                        text=int_name,
+                        manager=ctx.ui_manager,
+                        container=interrupt_container,
+                    )
+                    interrupt_labels[int_name] = label
                     y_off += 30
 
                 interrupt_container.set_scrollable_area_dimensions((ctx.map_pixel_size - 20, max(y_off, interrupts_height)))
@@ -1671,6 +1682,7 @@ def draw_ui(ctx: GameContext) -> None:
                     clear_plan_btn=clear_plan_btn,
                     selection_label=selection_label,
                     interrupt_checkboxes=interrupt_checkboxes,
+                    interrupt_labels=interrupt_labels,
                     interrupt_container=interrupt_container,
                 )
 
