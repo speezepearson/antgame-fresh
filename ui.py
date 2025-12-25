@@ -69,11 +69,11 @@ class DispositionControls:
 class PlanControls:
     """UI controls for plan editing."""
 
-    text_area: arcade.gui.UITextArea
+    text_area: arcade.gui.UITextArea | None
     last_plan_text: str
-    issue_plan_btn: arcade.gui.UIFlatButton
-    clear_plan_btn: arcade.gui.UIFlatButton
-    selection_label: arcade.gui.UILabel
+    issue_plan_btn: arcade.gui.UIFlatButton | None
+    clear_plan_btn: arcade.gui.UIFlatButton | None
+    selection_label: arcade.gui.UILabel | None
 
 
 @dataclass
@@ -608,15 +608,9 @@ class AntGameWindow(arcade.Window):
                     if current_disposition == UnitType.FIGHTER:
                         view.disposition_controls.fighter_btn.text = "Fighter ✓"
                         view.disposition_controls.scout_btn.text = "Scout"
-                        # Update button colors
-                        view.disposition_controls.fighter_btn.style["bg_color"] = arcade.color.DARK_GREEN
-                        view.disposition_controls.scout_btn.style["bg_color"] = arcade.color.DARK_GRAY
                     else:
                         view.disposition_controls.fighter_btn.text = "Fighter"
                         view.disposition_controls.scout_btn.text = "Scout ✓"
-                        # Update button colors
-                        view.disposition_controls.fighter_btn.style["bg_color"] = arcade.color.DARK_GRAY
-                        view.disposition_controls.scout_btn.style["bg_color"] = arcade.color.DARK_GREEN
 
         # Handle plan controls for each team
         for team in Team:
@@ -772,7 +766,7 @@ class AntGameWindow(arcade.Window):
 
         # Update UI manager
         if self.game_ctx.ui_manager:
-            self.game_ctx.ui_manager.on_update(delta_time)
+            self.game_ctx.ui_manager.on_update(delta_time)  # type: ignore[no-untyped-call]
 
     def on_mouse_press(self, x: int, y: int, button: int, modifiers: int) -> None:
         """Handle mouse clicks."""
