@@ -9,6 +9,7 @@ from mechanics import (
     Team,
     UnitId,
     Unit,
+    UnitType,
     Plan,
     Move,
     Order,
@@ -57,6 +58,14 @@ def serialize_team(team: Team) -> str:
 
 def deserialize_team(data: str) -> Team:
     return Team[data]
+
+
+def serialize_unit_type(unit_type: UnitType) -> str:
+    return unit_type.name
+
+
+def deserialize_unit_type(data: str) -> UnitType:
+    return UnitType[data]
 
 
 # ===== Cell Contents =====
@@ -217,8 +226,8 @@ def serialize_unit(unit: Unit) -> Dict[str, Any]:
         "team": serialize_team(unit.team),
         "pos": serialize_pos(unit.pos),
         "original_pos": serialize_pos(unit.original_pos),
+        "unit_type": serialize_unit_type(unit.unit_type),
         "carrying_food": unit.carrying_food,
-        "visibility_radius": unit.visibility_radius,
         "plan": serialize_plan(unit.plan),
         # Note: We don't serialize observation_log and last_sync_tick
         # as they're not needed for player knowledge
@@ -231,8 +240,8 @@ def deserialize_unit(data: Dict[str, Any]) -> Unit:
         team=deserialize_team(data["team"]),
         pos=deserialize_pos(data["pos"]),
         original_pos=deserialize_pos(data["original_pos"]),
+        unit_type=deserialize_unit_type(data.get("unit_type", "FIGHTER")),
         carrying_food=data["carrying_food"],
-        visibility_radius=data["visibility_radius"],
         plan=deserialize_plan(data["plan"]),
         observation_log={},  # Empty in deserialized units
         last_sync_tick=Timestamp(0),

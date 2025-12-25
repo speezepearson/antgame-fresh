@@ -9,7 +9,7 @@ import requests
 import time
 
 from core import Pos, Region, Timestamp
-from mechanics import Team, GameState, Plan, UnitId
+from mechanics import Team, GameState, Plan, UnitId, UnitType
 from knowledge import PlayerKnowledge
 
 
@@ -28,6 +28,11 @@ class GameClient(ABC):
     @abstractmethod
     def set_unit_plan(self, team: Team, unit_id: UnitId, plan: Plan) -> None:
         """Set a unit's plan (if it's in that team's base)."""
+        pass
+
+    @abstractmethod
+    def set_unit_disposition(self, team: Team, unit_type: UnitType) -> None:
+        """Set the type of units to spawn when food is brought back to the base."""
         pass
 
     @abstractmethod
@@ -72,6 +77,9 @@ class LocalClient(GameClient):
     def set_unit_plan(self, team: Team, unit_id: UnitId, plan: Plan) -> None:
         # LocalClient has direct access, so just call the method
         self.state.set_unit_plan(unit_id, plan)
+
+    def set_unit_disposition(self, team: Team, unit_type: UnitType) -> None:
+        self.state.unit_disposition[team] = unit_type
 
     def get_base_region(self, team: Team) -> Region:
         return self.state.base_regions[team]
@@ -155,6 +163,21 @@ class RemoteClient(GameClient):
             response.raise_for_status()
         except Exception as e:
             print(f"Error setting unit plan: {e}")
+            raise
+
+    def set_unit_disposition(self, team: Team, unit_type: UnitType) -> None:
+        if team != self.team:
+            raise ValueError(f"Can only control own team ({self.team}) in remote mode")
+
+        try:
+            response = requests.post(
+                f"{self.url}/disposition/{team.name}",
+                json={"unit_type": unit_type.value},
+                timeout=5,
+            )
+            response.raise_for_status()
+        except Exception as e:
+            print(f"Error setting unit disposition: {e}")
             raise
 
     def get_base_region(self, team: Team) -> Region:

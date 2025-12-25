@@ -31,6 +31,7 @@ from mechanics import (
     tick_game,
     Unit,
     UnitId,
+    UnitType,
     Order,
     Condition,
     Action,
@@ -56,6 +57,14 @@ class TickControls:
 
 
 @dataclass
+class DispositionControls:
+    """UI controls for unit disposition."""
+
+    fighter_btn: pygame_gui.elements.UIButton
+    scout_btn: pygame_gui.elements.UIButton
+
+
+@dataclass
 class PlanControls:
     """UI controls for plan editing."""
 
@@ -70,6 +79,7 @@ class PlanControls:
 class PlayerView:
     knowledge: PlayerKnowledge
     tick_controls: TickControls
+    disposition_controls: DispositionControls
     plan_controls: PlanControls | None = None
     freeze_frame: Timestamp | None = None
     selected_unit_id: UnitId | None = None
@@ -613,6 +623,21 @@ def initialize_game() -> GameContext:
         Team.BLUE: blue_offset_x,
     }
 
+    # Create disposition controls for RED team
+    disposition_y = slider_y + 25
+    red_disposition_controls = DispositionControls(
+        fighter_btn=pygame_gui.elements.UIButton(
+            relative_rect=pygame.Rect(red_offset_x, disposition_y, 70, 20),
+            text="Fighter",
+            manager=ui_manager,
+        ),
+        scout_btn=pygame_gui.elements.UIButton(
+            relative_rect=pygame.Rect(red_offset_x + 75, disposition_y, 70, 20),
+            text="Scout",
+            manager=ui_manager,
+        ),
+    )
+
     # Create time sliders for RED team
     red_tick_controls = TickControls(
         slider=pygame_gui.elements.UIHorizontalSlider(
@@ -633,6 +658,20 @@ def initialize_game() -> GameContext:
                 red_offset_x + slider_width + 50, slider_y, 50, 20
             ),
             text="LIVE",
+            manager=ui_manager,
+        ),
+    )
+
+    # Create disposition controls for BLUE team
+    blue_disposition_controls = DispositionControls(
+        fighter_btn=pygame_gui.elements.UIButton(
+            relative_rect=pygame.Rect(blue_offset_x, disposition_y, 70, 20),
+            text="Fighter",
+            manager=ui_manager,
+        ),
+        scout_btn=pygame_gui.elements.UIButton(
+            relative_rect=pygame.Rect(blue_offset_x + 75, disposition_y, 70, 20),
+            text="Scout",
             manager=ui_manager,
         ),
     )
@@ -677,6 +716,7 @@ def initialize_game() -> GameContext:
             red_view = PlayerView(
                 knowledge=initial_knowledge,
                 tick_controls=red_tick_controls,
+                disposition_controls=red_disposition_controls,
             )
             # Create a dummy blue view (won't be visible)
             blue_view = PlayerView(
@@ -687,6 +727,7 @@ def initialize_game() -> GameContext:
                     tick=Timestamp(0),
                 ),
                 tick_controls=blue_tick_controls,
+                disposition_controls=blue_disposition_controls,
             )
         else:
             # Create a dummy red view (won't be visible)
@@ -698,10 +739,12 @@ def initialize_game() -> GameContext:
                     tick=Timestamp(0),
                 ),
                 tick_controls=red_tick_controls,
+                disposition_controls=red_disposition_controls,
             )
             blue_view = PlayerView(
                 knowledge=initial_knowledge,
                 tick_controls=blue_tick_controls,
+                disposition_controls=blue_disposition_controls,
             )
     else:
         # Local or server mode: create views for both teams
@@ -715,6 +758,7 @@ def initialize_game() -> GameContext:
                 tick=state.tick,
             ),
             tick_controls=red_tick_controls,
+            disposition_controls=red_disposition_controls,
         )
         blue_view = PlayerView(
             knowledge=PlayerKnowledge(
@@ -724,6 +768,7 @@ def initialize_game() -> GameContext:
                 tick=state.tick,
             ),
             tick_controls=blue_tick_controls,
+            disposition_controls=blue_disposition_controls,
         )
 
         # Create LocalClient
@@ -781,8 +826,13 @@ def handle_events(ctx: GameContext) -> bool:
 
             # Handle pygame_gui button clicks
             if event.type == pygame_gui.UI_BUTTON_PRESSED:
+                # Handle disposition buttons
+                if event.ui_element == view.disposition_controls.fighter_btn:
+                    ctx.client.set_unit_disposition(team, UnitType.FIGHTER)
+                elif event.ui_element == view.disposition_controls.scout_btn:
+                    ctx.client.set_unit_disposition(team, UnitType.SCOUT)
                 # Handle plan control buttons
-                if event.ui_element == view.tick_controls.live_btn:
+                elif event.ui_element == view.tick_controls.live_btn:
                     view.freeze_frame = None
                 if view.plan_controls is not None:
                     if event.ui_element == view.plan_controls.issue_plan_btn:
@@ -941,6 +991,18 @@ def draw_ui(ctx: GameContext) -> None:
     plan_box_height = 180
     btn_y = plan_y + plan_box_height + 5
     selection_label_y = ctx.slider_y
+
+    # Update disposition button text based on current setting
+    if isinstance(ctx.client, LocalClient):
+        for team in Team:
+            view = ctx.views[team]
+            current_disposition = ctx.client.state.unit_disposition[team]
+            if current_disposition == UnitType.FIGHTER:
+                view.disposition_controls.fighter_btn.set_text("Fighter ✓")
+                view.disposition_controls.scout_btn.set_text("Scout")
+            else:
+                view.disposition_controls.fighter_btn.set_text("Fighter")
+                view.disposition_controls.scout_btn.set_text("Scout ✓")
 
     # Handle plan controls for each team
     for team in Team:

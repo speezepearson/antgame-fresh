@@ -59,6 +59,11 @@ class Team(Enum):
     BLUE = "BLUE"
 
 
+class UnitType(Enum):
+    FIGHTER = "FIGHTER"
+    SCOUT = "SCOUT"
+
+
 @dataclass(frozen=True)
 class MoveOrder:
     target: Pos
@@ -462,12 +467,19 @@ class Unit:
     team: Team
     pos: Pos
     original_pos: Pos  # Where the unit spawned (for returning home)
+    unit_type: UnitType = UnitType.FIGHTER
     plan: Plan = field(default_factory=Plan)
     # Observations since last sync with home base
     observation_log: ObservationLog = field(default_factory=dict)
     last_sync_tick: Timestamp = 0
-    visibility_radius: int = 5
     carrying_food: int = 0
+
+    @property
+    def visibility_radius(self) -> int:
+        """Get visibility radius based on unit type."""
+        if self.unit_type == UnitType.SCOUT:
+            return 10  # Scouts have 2x visibility
+        return 5  # Fighters have normal visibility
 
     def home_pos(self) -> Pos:
         """Get this unit's original spawn position (for returning home)."""
@@ -535,6 +547,7 @@ class GameState:
     tick: Timestamp = 0
     units: dict[UnitId, Unit] = field(default_factory=dict)
     food: dict[Pos, int] = field(default_factory=dict)
+    unit_disposition: dict[Team, UnitType] = field(default_factory=lambda: {Team.RED: UnitType.FIGHTER, Team.BLUE: UnitType.FIGHTER})
 
     def get_base_region(self, team: Team) -> Region:
         """Get a team's base region."""
@@ -652,7 +665,11 @@ def tick_game(state: GameState) -> None:
             teams_at_pos = {unit.team for unit in units_at_pos}
             if len(teams_at_pos) > 1:
                 # Multiple teams at same position - mutual annihilation
-                units_to_remove.update([unit.id for unit in units_at_pos])
+                # Scouts don't participate in combat - they don't kill enemies
+                fighters_to_remove = [
+                    unit.id for unit in units_at_pos if unit.unit_type != UnitType.SCOUT
+                ]
+                units_to_remove.update(fighters_to_remove)
 
     state.kill_units(*units_to_remove)
 
@@ -678,6 +695,7 @@ def tick_game(state: GameState) -> None:
                             team=u.team,
                             pos=closest_cell,
                             original_pos=closest_cell,
+                            unit_type=state.unit_disposition[team],
                         )
                     )
                     unoccupied_cells.remove(closest_cell)
