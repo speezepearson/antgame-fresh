@@ -79,6 +79,7 @@ class Empty:
 class UnitPresent:
     team: Team
     unit_id: UnitId
+    unit_type: UnitType = UnitType.FIGHTER
 
 
 @dataclass(frozen=True)
@@ -517,15 +518,15 @@ def make_game(
         grid_height=grid_height,
     )
 
+    # Create starting units: 1 fighter and 1 scout per team
+    red_positions = random.sample(list(red_base.cells), 2)
+    blue_positions = random.sample(list(blue_base.cells), 2)
+
     units_list = [
-        *[
-            Unit(_generate_unit_id(), Team.RED, pos, pos)
-            for pos in random.sample(list(red_base.cells), 3)
-        ],
-        *[
-            Unit(_generate_unit_id(), Team.BLUE, pos, pos)
-            for pos in random.sample(list(blue_base.cells), 3)
-        ],
+        Unit(_generate_unit_id(), Team.RED, red_positions[0], red_positions[0], unit_type=UnitType.FIGHTER),
+        Unit(_generate_unit_id(), Team.RED, red_positions[1], red_positions[1], unit_type=UnitType.SCOUT),
+        Unit(_generate_unit_id(), Team.BLUE, blue_positions[0], blue_positions[0], unit_type=UnitType.FIGHTER),
+        Unit(_generate_unit_id(), Team.BLUE, blue_positions[1], blue_positions[1], unit_type=UnitType.SCOUT),
     ]
     return GameState(
         grid_width=grid_width,
@@ -595,7 +596,7 @@ class GameState:
         # Check for units
         for unit in self.units.values():
             if unit.pos == pos:
-                contents.append(UnitPresent(unit.team, unit.id))
+                contents.append(UnitPresent(unit.team, unit.id, unit.unit_type))
 
         # Check for bases (any cell in the region)
         if self.get_base_region(Team.RED).contains(pos):

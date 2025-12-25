@@ -188,18 +188,42 @@ def draw_unit_at(
     offset_y: int,
     selected: bool = False,
     outline_only: bool = False,
+    unit_type: UnitType = UnitType.FIGHTER,
 ) -> None:
     color = (255, 100, 100) if team == Team.RED else (100, 100, 255)
     center_x = offset_x + pos.x * TILE_SIZE + TILE_SIZE // 2
     center_y = offset_y + pos.y * TILE_SIZE + TILE_SIZE // 2
-    radius = TILE_SIZE // 3
 
-    if outline_only:
-        pygame.draw.circle(surface, color, (center_x, center_y), radius, 1)
+    if unit_type == UnitType.SCOUT:
+        # Draw square for scouts
+        size = TILE_SIZE // 3
+        rect = pygame.Rect(
+            center_x - size,
+            center_y - size,
+            size * 2,
+            size * 2,
+        )
+        if outline_only:
+            pygame.draw.rect(surface, color, rect, 1)
+        else:
+            pygame.draw.rect(surface, color, rect)
+        if selected:
+            selection_rect = pygame.Rect(
+                center_x - size - 3,
+                center_y - size - 3,
+                size * 2 + 6,
+                size * 2 + 6,
+            )
+            pygame.draw.rect(surface, (255, 255, 0), selection_rect, 2)
     else:
-        pygame.draw.circle(surface, color, (center_x, center_y), radius)
-    if selected:
-        pygame.draw.circle(surface, (255, 255, 0), (center_x, center_y), radius + 3, 2)
+        # Draw circle for fighters
+        radius = TILE_SIZE // 3
+        if outline_only:
+            pygame.draw.circle(surface, color, (center_x, center_y), radius, 1)
+        else:
+            pygame.draw.circle(surface, color, (center_x, center_y), radius)
+        if selected:
+            pygame.draw.circle(surface, (255, 255, 0), (center_x, center_y), radius + 3, 2)
 
 
 def draw_food(
@@ -311,6 +335,7 @@ def draw_god_view(
             unit.pos,
             offset_x,
             offset_y,
+            unit_type=unit.unit_type,
         )
 
 
@@ -384,6 +409,7 @@ def draw_player_view(
                         offset_x,
                         offset_y,
                         outline_only=pos not in cur_observations,
+                        unit_type=contents.unit_type,
                     )
                 elif isinstance(contents, FoodPresent):
                     draw_food(
@@ -418,6 +444,7 @@ def draw_player_view(
                         offset_x,
                         offset_y,
                         outline_only=False,
+                        unit_type=contents.unit_type,
                     )
                 elif isinstance(contents, FoodPresent):
                     draw_food(
@@ -436,8 +463,13 @@ def draw_player_view(
             predicted_pos = trajectory.positions[
                 min(trajectory_index, len(trajectory.positions) - 1)
             ]
+            # Get unit type from last_seen
+            unit_type = UnitType.FIGHTER
+            if trajectory.unit_id in view.knowledge.last_seen:
+                _, unit = view.knowledge.last_seen[trajectory.unit_id]
+                unit_type = unit.unit_type
             draw_unit_at(
-                surface, team, predicted_pos, offset_x, offset_y, outline_only=True
+                surface, team, predicted_pos, offset_x, offset_y, outline_only=True, unit_type=unit_type
             )
 
 
@@ -987,12 +1019,12 @@ def draw_ui(ctx: GameContext) -> None:
             blue_view.tick_controls.tick_label.set_text(f"t={blue_view_tick}")
 
     # Plan area layout
-    plan_y = ctx.slider_y + 30
+    plan_y = ctx.slider_y + 55  # Move down to avoid overlapping disposition buttons
     plan_box_height = 180
     btn_y = plan_y + plan_box_height + 5
     selection_label_y = ctx.slider_y
 
-    # Update disposition button text based on current setting
+    # Update disposition button appearance based on current setting
     if isinstance(ctx.client, LocalClient):
         for team in Team:
             view = ctx.views[team]
@@ -1000,9 +1032,25 @@ def draw_ui(ctx: GameContext) -> None:
             if current_disposition == UnitType.FIGHTER:
                 view.disposition_controls.fighter_btn.set_text("Fighter ✓")
                 view.disposition_controls.scout_btn.set_text("Scout")
+                # Visually distinguish selected button
+                try:
+                    view.disposition_controls.fighter_btn.colours["normal_bg"] = pygame.Color(80, 100, 80)
+                    view.disposition_controls.scout_btn.colours["normal_bg"] = pygame.Color(60, 60, 60)
+                    view.disposition_controls.fighter_btn.rebuild()  # type: ignore[no-untyped-call]
+                    view.disposition_controls.scout_btn.rebuild()  # type: ignore[no-untyped-call]
+                except:
+                    pass
             else:
                 view.disposition_controls.fighter_btn.set_text("Fighter")
                 view.disposition_controls.scout_btn.set_text("Scout ✓")
+                # Visually distinguish selected button
+                try:
+                    view.disposition_controls.fighter_btn.colours["normal_bg"] = pygame.Color(60, 60, 60)
+                    view.disposition_controls.scout_btn.colours["normal_bg"] = pygame.Color(80, 100, 80)
+                    view.disposition_controls.fighter_btn.rebuild()  # type: ignore[no-untyped-call]
+                    view.disposition_controls.scout_btn.rebuild()  # type: ignore[no-untyped-call]
+                except:
+                    pass
 
     # Handle plan controls for each team
     for team in Team:

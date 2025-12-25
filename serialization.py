@@ -79,6 +79,7 @@ def serialize_cell_contents(contents: CellContents) -> Dict[str, Any]:
             "type": "UnitPresent",
             "team": serialize_team(contents.team),
             "unit_id": int(contents.unit_id),
+            "unit_type": serialize_unit_type(contents.unit_type),
         }
     elif isinstance(contents, BasePresent):
         return {"type": "BasePresent", "team": serialize_team(contents.team)}
@@ -93,7 +94,9 @@ def deserialize_cell_contents(data: Dict[str, Any]) -> CellContents:
         return Empty()
     elif data["type"] == "UnitPresent":
         return UnitPresent(
-            team=deserialize_team(data["team"]), unit_id=UnitId(data["unit_id"])
+            team=deserialize_team(data["team"]),
+            unit_id=UnitId(data["unit_id"]),
+            unit_type=deserialize_unit_type(data.get("unit_type", "FIGHTER")),
         )
     elif data["type"] == "BasePresent":
         return BasePresent(team=deserialize_team(data["team"]))
