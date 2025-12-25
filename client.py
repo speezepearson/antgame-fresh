@@ -180,6 +180,12 @@ class RemoteClient(GameClient):
             print(f"Error setting unit plan: {e}")
             raise
 
+    def add_player_action(self, team: Team, action: PlayerAction) -> None:
+        if team != self.team:
+            raise ValueError(f"Can only control own team ({self.team}) in remote mode")
+        # TODO: Implement remote player action support
+        raise NotImplementedError("Remote player actions not yet implemented")
+
     def spawn_unit(self, team: Team, unit_type: UnitType) -> bool:
         if team != self.team:
             raise ValueError(f"Can only control own team ({self.team}) in remote mode")

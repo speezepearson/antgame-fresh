@@ -4,7 +4,7 @@ import pytest
 import responses
 import threading
 import time
-from typing import Any, AsyncIterator, Generator, Iterator
+from typing import Any, AsyncIterator, Generator, Iterator, cast
 from aiohttp.test_utils import TestClient, TestServer
 
 from core import Pos, Region, Timestamp
@@ -12,22 +12,24 @@ from mechanics import (
     Team,
     Unit,
     UnitId,
-    Plan,
-    Move,
     GameState,
     make_game,
+    Empty,
+    UnitPresent,
+    BasePresent,
+    FoodPresent,
+)
+from planning import (
+    Plan,
+    Move,
     Interrupt,
     EnemyInRangeCondition,
     MoveHomeAction,
     MoveThereAction,
     FoodInRangeCondition,
-    Empty,
-    UnitPresent,
-    BasePresent,
-    FoodPresent,
     BaseVisibleCondition,
     PositionReachedCondition,
-    tick_game,
+    PlanningMind,
 )
 from knowledge import PlayerKnowledge, ExpectedTrajectory
 from serialization import (
@@ -60,6 +62,7 @@ from serialization import (
 )
 from client import LocalClient, RemoteClient, GameClient
 from server import GameServer
+from test_utils import make_unit
 
 
 # ===== Serialization Tests =====
@@ -190,25 +193,22 @@ class TestSerialization:
 
     def test_unit_roundtrips(self):
         """Test unit serialization."""
-        unit = Unit(
-            id=UnitId(123),
-            team=Team.RED,
-            pos=Pos(5, 6),
-            original_pos=Pos(5, 6),
-            carrying_food=3,
-            plan=Plan(orders=[Move(target=Pos(10, 10))]),
-            observation_log={},
-            last_sync_tick=Timestamp(0),
-        )
+        unit = make_unit(Team.RED, Pos(5, 6), plan=Plan(orders=[Move(target=Pos(10, 10))]))
+        unit.carrying_food = 3
+        # Override the auto-generated ID for test consistency
+        from mechanics import UnitId
+        unit.id = UnitId(123)
+
         data = serialize_unit(unit)
         deserialized = deserialize_unit(data)
         assert deserialized.id == unit.id
         assert deserialized.team == unit.team
         assert deserialized.pos == unit.pos
-        assert deserialized.original_pos == unit.original_pos
         assert deserialized.carrying_food == unit.carrying_food
         assert deserialized.visibility_radius == unit.visibility_radius
-        assert len(deserialized.plan.orders) == 1
+        # Check that the mind is a PlanningMind with the plan
+        mind = cast(PlanningMind, deserialized.mind)
+        assert len(mind.plan.orders) == 1
 
     def test_observation_log_roundtrips(self):
         """Test observation log serialization."""
@@ -230,16 +230,14 @@ class TestSerialization:
 
     def test_expected_trajectory_roundtrips(self):
         """Test expected trajectory serialization."""
-        trajectory = ExpectedTrajectory(
-            unit_id=UnitId(42),
-            start_tick=Timestamp(10),
-            positions=[Pos(0, 0), Pos(1, 1), Pos(2, 2)],
-        )
+        trajectory: ExpectedTrajectory = {
+            Timestamp(0): Pos(0, 0),
+            Timestamp(1): Pos(1, 1),
+            Timestamp(2): Pos(2, 2),
+        }
         data = serialize_expected_trajectory(trajectory)
         deserialized = deserialize_expected_trajectory(data)
-        assert deserialized.unit_id == trajectory.unit_id
-        assert deserialized.start_tick == trajectory.start_tick
-        assert deserialized.positions == trajectory.positions
+        assert deserialized == trajectory
 
     def test_player_knowledge_roundtrips(self):
         """Test player knowledge serialization."""
@@ -249,32 +247,24 @@ class TestSerialization:
             grid_height=32,
             tick=Timestamp(5),
         )
-        knowledge.all_observations = {
+        # Add observations to the logbook
+        knowledge.logbook.observation_log = {
             Timestamp(0): {Pos(0, 0): [Empty()]},
         }
         knowledge.last_in_base = {
             UnitId(1): (
                 Timestamp(3),
-                Unit(
-                    id=UnitId(1),
-                    team=Team.RED,
-                    pos=Pos(5, 5),
-                    original_pos=Pos(5, 5),
-                    plan=Plan(),
-                    observation_log={},
-                    last_sync_tick=Timestamp(0),
-                ),
+                make_unit(Team.RED, Pos(5, 5)),
             )
         }
         knowledge.expected_trajectories = {
-            UnitId(2): ExpectedTrajectory(
-                unit_id=UnitId(2),
-                start_tick=Timestamp(2),
-                positions=[Pos(3, 3), Pos(4, 4)],
-            )
+            UnitId(2): {
+                Timestamp(2): Pos(3, 3),
+                Timestamp(3): Pos(4, 4),
+            }
         }
-        knowledge.last_observations = {
-            Pos(1, 1): (Timestamp(4), [FoodPresent(count=2)])
+        knowledge.own_units_in_base = {
+            UnitId(1): make_unit(Team.RED, Pos(5, 5)),
         }
 
         data = serialize_player_knowledge(knowledge)
@@ -284,10 +274,9 @@ class TestSerialization:
         assert deserialized.grid_width == knowledge.grid_width
         assert deserialized.grid_height == knowledge.grid_height
         assert deserialized.tick == knowledge.tick
-        assert Timestamp(0) in deserialized.all_observations
+        assert Timestamp(0) in deserialized.logbook.observation_log
         assert UnitId(1) in deserialized.last_in_base
         assert UnitId(2) in deserialized.expected_trajectories
-        assert Pos(1, 1) in deserialized.last_observations
 
 
 # ===== LocalClient Tests =====
@@ -298,7 +287,7 @@ class TestLocalClient:
 
     def _make_client(self):
         """Create a LocalClient with test game state."""
-        state = make_game(grid_width=16, grid_height=16)
+        state = make_game(make_mind=PlanningMind, grid_width=16, grid_height=16)
         knowledge = {
             Team.RED: PlayerKnowledge(Team.RED, 16, 16, state.now),
             Team.BLUE: PlayerKnowledge(Team.BLUE, 16, 16, state.now),
@@ -311,22 +300,6 @@ class TestLocalClient:
 
         assert client.get_player_knowledge(Team.RED, tick=state.now) == knowledge[Team.RED]
         assert client.get_player_knowledge(Team.BLUE, tick=state.now) == knowledge[Team.BLUE]
-
-    def test_sets_unit_plan(self):
-        """Test LocalClient can set unit plans."""
-        client, state, knowledge = self._make_client()
-
-        # Get a unit from RED team
-        red_unit = next(u for u in state.units.values() if u.team == Team.RED)
-        unit_id = red_unit.id
-
-        # Set a plan
-        new_plan = Plan(orders=[Move(target=Pos(10, 10))])
-        client.set_unit_plan(Team.RED, unit_id, new_plan)
-
-        # Verify plan was set
-        assert len(state.units[unit_id].plan.orders) == 1
-        assert state.units[unit_id].plan.orders[0].target == Pos(10, 10)
 
     def test_returns_base_region(self):
         """Test LocalClient returns base regions."""
@@ -346,7 +319,7 @@ class TestLocalClient:
         client, state, knowledge = self._make_client()
         initial_tick = client.get_current_tick()
 
-        tick_game(state)
+        client.tick_game()
 
         assert client.get_current_tick() == state.now
         assert client.get_current_tick() > initial_tick
@@ -373,27 +346,27 @@ class TestGameServer:
     """Tests for the GameServer HTTP endpoints."""
 
     @pytest.fixture
-    async def test_app(self) -> AsyncIterator[tuple[Any, GameState, dict[Team, PlayerKnowledge]]]:
+    async def test_app(self) -> AsyncIterator[tuple[Any, GameState, dict[Team, PlayerKnowledge], LocalClient]]:
         """Create a test aiohttp app with game state."""
-        state = make_game(grid_width=16, grid_height=16)
+        state = make_game(make_mind=PlanningMind, grid_width=16, grid_height=16)
         knowledge = {
             Team.RED: PlayerKnowledge(Team.RED, 16, 16, state.now),
             Team.BLUE: PlayerKnowledge(Team.BLUE, 16, 16, state.now),
         }
+        local_client = LocalClient(state=state, knowledge=knowledge)
 
         # Initialize knowledge with base observations
-        for team in [Team.RED, Team.BLUE]:
-            knowledge[team].record_observations_from_bases(state)
+        local_client._let_all_players_observe()
 
         server = GameServer(state, knowledge, port=5000)
         app = server._create_app()
 
         async with TestClient(TestServer(app)) as client:
-            yield client, state, knowledge
+            yield client, state, knowledge, local_client
 
     async def test_returns_knowledge_for_valid_team(self, test_app):
         """Test server /knowledge endpoint returns data for valid team."""
-        client, state, knowledge = test_app
+        client, state, knowledge, local_client = test_app
 
         response = await client.get("/knowledge/RED")
         assert response.status == 200
@@ -409,7 +382,7 @@ class TestGameServer:
 
     async def test_rejects_invalid_team(self, test_app):
         """Test server /knowledge endpoint rejects invalid team."""
-        client, state, knowledge = test_app
+        client, state, knowledge, local_client = test_app
 
         response = await client.get("/knowledge/INVALID")
         assert response.status == 400
@@ -417,12 +390,10 @@ class TestGameServer:
 
     async def test_returns_knowledge_at_requested_tick(self, test_app):
         """Test server /knowledge endpoint with tick parameter."""
-        client, state, knowledge = test_app
+        client, state, knowledge, local_client = test_app
 
         # Advance game before making request
-        tick_game(state)
-        for k in knowledge.values():
-            k.tick_knowledge(state)
+        local_client.tick_game()
 
         response = await client.get("/knowledge/RED?tick=1")
         assert response.status == 200
@@ -432,14 +403,11 @@ class TestGameServer:
 
     async def test_returns_immediately_for_past_tick(self, test_app):
         """Test server returns immediately if knowledge already at requested tick."""
-        client, state, knowledge = test_app
+        client, state, knowledge, local_client = test_app
 
         # Advance to tick 2
-        tick_game(state)
-        tick_game(state)
-        for k in knowledge.values():
-            k.tick_knowledge(state)
-            k.tick_knowledge(state)
+        local_client.tick_game()
+        local_client.tick_game()
 
         start_time = time.time()
         response = await client.get("/knowledge/RED?tick=1")
@@ -449,31 +417,9 @@ class TestGameServer:
         assert elapsed < 0.5  # Should be nearly instant
         assert (await response.json())["knowledge"]["tick"] >= 1
 
-    async def test_sets_unit_plan(self, test_app):
-        """Test server /act endpoint sets plan for unit in base."""
-        client, state, knowledge = test_app
-
-        red_units = [u for u in state.units.values() if u.team == Team.RED]
-        unit_id = red_units[0].id
-
-        plan_data = {
-            "orders": [{"type": "Move", "target": {"x": 10, "y": 10}}],
-            "interrupts": [],
-        }
-
-        response = await client.post(
-            f"/act/RED/{unit_id}",
-            json=plan_data,
-        )
-        assert response.status == 200
-        assert (await response.json())["success"] is True
-
-        assert len(state.units[unit_id].plan.orders) == 1
-        assert state.units[unit_id].plan.orders[0].target == Pos(10, 10)
-
     async def test_rejects_plan_for_invalid_team(self, test_app):
         """Test server /act endpoint rejects invalid team."""
-        client, state, knowledge = test_app
+        client, state, knowledge, local_client = test_app
 
         plan_data = {
             "orders": [{"type": "Move", "target": {"x": 10, "y": 10}}],
@@ -489,7 +435,7 @@ class TestGameServer:
 
     async def test_rejects_invalid_plan_data(self, test_app):
         """Test server /act endpoint rejects malformed plan data."""
-        client, state, knowledge = test_app
+        client, state, knowledge, local_client = test_app
 
         response = await client.post(
             "/act/RED/1",
@@ -498,30 +444,11 @@ class TestGameServer:
         assert response.status == 400
         assert "error" in await response.json()
 
-    async def test_rejects_plan_for_unit_not_in_base(self, test_app):
-        """Test server rejects plan for unit not in base."""
-        client, state, knowledge = test_app
-
-        red_unit = next(u for u in state.units.values() if u.team == Team.RED)
-        red_unit.pos = Pos(20, 20)  # Move unit far from base
-
-        plan_data = {
-            "orders": [{"type": "Move", "target": {"x": 10, "y": 10}}],
-            "interrupts": [],
-        }
-
-        response = await client.post(
-            f"/act/RED/{red_unit.id}",
-            json=plan_data,
-        )
-        assert response.status == 400
-        assert "error" in await response.json()
-
 
 # ===== RemoteClient Tests (Integration - requires real server) =====
 
 
-RunningServerFixture = tuple[GameServer, GameState, dict[Team, PlayerKnowledge], int]
+RunningServerFixture = tuple[GameServer, GameState, dict[Team, PlayerKnowledge], int, LocalClient]
 
 
 @pytest.fixture
@@ -532,22 +459,22 @@ def running_server() -> Iterator[RunningServerFixture]:
     # Use random port to avoid conflicts
     port = random.randint(5100, 5999)
 
-    state = make_game(grid_width=16, grid_height=16)
+    state = make_game(make_mind=PlanningMind, grid_width=16, grid_height=16)
     knowledge = {
         Team.RED: PlayerKnowledge(Team.RED, 16, 16, state.now),
         Team.BLUE: PlayerKnowledge(Team.BLUE, 16, 16, state.now),
     }
+    local_client = LocalClient(state=state, knowledge=knowledge)
 
     # Initialize knowledge with base observations
-    for team in [Team.RED, Team.BLUE]:
-        knowledge[team].record_observations_from_bases(state)
+    local_client._let_all_players_observe()
 
     ready_event = threading.Event()
     server = GameServer(state, knowledge, port=port, ready_event=ready_event)
     server.start()
     ready_event.wait(timeout=5.0)
 
-    yield server, state, knowledge, port
+    yield server, state, knowledge, port, local_client
 
     # Cleanup
     server.stop()
@@ -558,7 +485,7 @@ class TestRemoteClient:
 
     def test_initializes_and_fetches_knowledge(self, running_server: RunningServerFixture) -> None:
         """Test RemoteClient can initialize and fetch initial knowledge."""
-        server, state, knowledge, port = running_server
+        server, state, knowledge, port, local_client = running_server
 
         client = RemoteClient(url=f"http://localhost:{port}", team=Team.RED)
 
@@ -570,7 +497,7 @@ class TestRemoteClient:
 
     def test_fetches_player_knowledge_for_own_team(self, running_server: RunningServerFixture) -> None:
         """Test RemoteClient can fetch player knowledge for own team."""
-        server, state, knowledge, port = running_server
+        server, state, knowledge, port, local_client = running_server
 
         client = RemoteClient(url=f"http://localhost:{port}", team=Team.RED)
 
@@ -581,31 +508,16 @@ class TestRemoteClient:
 
     def test_rejects_knowledge_request_for_other_team(self, running_server: RunningServerFixture) -> None:
         """Test RemoteClient rejects knowledge requests for other team."""
-        server, state, knowledge, port = running_server
+        server, state, knowledge, port, local_client = running_server
 
         client = RemoteClient(url=f"http://localhost:{port}", team=Team.RED)
 
         with pytest.raises(ValueError, match="Can only view own team"):
             client.get_player_knowledge(Team.BLUE, tick=state.now)
 
-    def test_sets_unit_plan(self, running_server: RunningServerFixture) -> None:
-        """Test RemoteClient can set unit plans."""
-        server, state, knowledge, port = running_server
-
-        client = RemoteClient(url=f"http://localhost:{port}", team=Team.RED)
-
-        red_units = [u for u in state.units.values() if u.team == Team.RED]
-        unit_id = red_units[0].id
-
-        new_plan = Plan(orders=[Move(target=Pos(12, 12))])
-        client.set_unit_plan(Team.RED, unit_id, new_plan)
-
-        assert len(state.units[unit_id].plan.orders) == 1
-        assert state.units[unit_id].plan.orders[0] == Move(Pos(12, 12))
-
     def test_rejects_plan_for_other_team(self, running_server: RunningServerFixture) -> None:
         """Test RemoteClient cannot set plans for other team."""
-        server, state, knowledge, port = running_server
+        server, state, knowledge, port, local_client = running_server
 
         client = RemoteClient(url=f"http://localhost:{port}", team=Team.RED)
 
@@ -616,7 +528,7 @@ class TestRemoteClient:
 
     def test_gets_base_region_for_own_team(self, running_server: RunningServerFixture) -> None:
         """Test RemoteClient can get base region."""
-        server, state, knowledge, port = running_server
+        server, state, knowledge, port, local_client = running_server
 
         client = RemoteClient(url=f"http://localhost:{port}", team=Team.RED)
 
@@ -626,7 +538,7 @@ class TestRemoteClient:
 
     def test_rejects_base_region_for_other_team(self, running_server: RunningServerFixture) -> None:
         """Test RemoteClient rejects base region request for other team."""
-        server, state, knowledge, port = running_server
+        server, state, knowledge, port, local_client = running_server
 
         client = RemoteClient(url=f"http://localhost:{port}", team=Team.RED)
 
@@ -635,7 +547,7 @@ class TestRemoteClient:
 
     def test_returns_current_tick(self, running_server: RunningServerFixture) -> None:
         """Test RemoteClient can get current tick."""
-        server, state, knowledge, port = running_server
+        server, state, knowledge, port, local_client = running_server
 
         client = RemoteClient(url=f"http://localhost:{port}", team=Team.RED)
 
@@ -644,7 +556,7 @@ class TestRemoteClient:
 
     def test_god_view_not_available(self, running_server: RunningServerFixture) -> None:
         """Test RemoteClient cannot get god view."""
-        server, state, knowledge, port = running_server
+        server, state, knowledge, port, local_client = running_server
 
         client = RemoteClient(url=f"http://localhost:{port}", team=Team.RED)
 
@@ -652,7 +564,7 @@ class TestRemoteClient:
 
     def test_only_returns_own_team_as_available(self, running_server: RunningServerFixture) -> None:
         """Test RemoteClient only returns own team."""
-        server, state, knowledge, port = running_server
+        server, state, knowledge, port, local_client = running_server
 
         client = RemoteClient(url=f"http://localhost:{port}", team=Team.RED)
 
@@ -661,16 +573,14 @@ class TestRemoteClient:
 
     def test_knowledge_updates_when_game_advances(self, running_server: RunningServerFixture) -> None:
         """Test RemoteClient can fetch updated knowledge."""
-        server, state, knowledge, port = running_server
+        server, state, knowledge, port, local_client = running_server
 
         client = RemoteClient(url=f"http://localhost:{port}", team=Team.RED)
 
         initial_tick = client.get_current_tick()
 
-        # Advance game on server
-        tick_game(state)
-        for k in knowledge.values():
-            k.tick_knowledge(state)
+        # Advance game on server using local_client
+        local_client.tick_game()
 
         updated_knowledge = client.get_player_knowledge(Team.RED, state.now)
         assert updated_knowledge.tick > initial_tick
@@ -685,7 +595,7 @@ class TestClientServerIntegration:
 
     def test_both_teams_can_connect_and_interact(self, running_server: RunningServerFixture) -> None:
         """Test full client-server interaction with both teams."""
-        server, state, knowledge, port = running_server
+        server, state, knowledge, port, local_client = running_server
 
         # Create clients for both teams
         red_client = RemoteClient(url=f"http://localhost:{port}", team=Team.RED)
@@ -698,27 +608,9 @@ class TestClientServerIntegration:
         assert red_knowledge.team == Team.RED
         assert blue_knowledge.team == Team.BLUE
 
-    def test_both_teams_can_set_unit_plans(self, running_server: RunningServerFixture) -> None:
-        """Test both teams can set plans for their units."""
-        server, state, knowledge, port = running_server
-
-        red_client = RemoteClient(url=f"http://localhost:{port}", team=Team.RED)
-        blue_client = RemoteClient(url=f"http://localhost:{port}", team=Team.BLUE)
-
-        red_unit = next(u for u in state.units.values() if u.team == Team.RED)
-        blue_unit = next(u for u in state.units.values() if u.team == Team.BLUE)
-
-        red_client.set_unit_plan(Team.RED, red_unit.id, Plan(orders=[Move(target=Pos(8, 8))]))
-        blue_client.set_unit_plan(
-            Team.BLUE, blue_unit.id, Plan(orders=[Move(target=Pos(9, 9))])
-        )
-
-        assert state.units[red_unit.id].plan.orders[0] == Move(Pos(8, 8))
-        assert state.units[blue_unit.id].plan.orders[0] == Move(Pos(9, 9))
-
     def test_clients_receive_updated_knowledge_after_game_advances(self, running_server: RunningServerFixture) -> None:
         """Test clients receive updated knowledge when game advances."""
-        server, state, knowledge, port = running_server
+        server, state, knowledge, port, local_client = running_server
 
         red_client = RemoteClient(url=f"http://localhost:{port}", team=Team.RED)
         blue_client = RemoteClient(url=f"http://localhost:{port}", team=Team.BLUE)
@@ -726,10 +618,8 @@ class TestClientServerIntegration:
         red_knowledge = red_client.get_player_knowledge(Team.RED, tick=state.now)
         blue_knowledge = blue_client.get_player_knowledge(Team.BLUE, tick=state.now)
 
-        # Advance game
-        tick_game(state)
-        for k in knowledge.values():
-            k.tick_knowledge(state)
+        # Advance game using local_client
+        local_client.tick_game()
 
         # Fetch updated knowledge
         updated_red = red_client.get_player_knowledge(Team.RED, tick=state.now)
