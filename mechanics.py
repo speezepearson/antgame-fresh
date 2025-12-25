@@ -59,6 +59,11 @@ class Team(Enum):
     BLUE = "BLUE"
 
 
+class UnitType(Enum):
+    FIGHTER = "FIGHTER"
+    SCOUT = "SCOUT"
+
+
 @dataclass(frozen=True)
 class MoveOrder:
     target: Pos
@@ -74,6 +79,7 @@ class Empty:
 class UnitPresent:
     team: Team
     unit_id: UnitId
+    unit_type: UnitType = UnitType.FIGHTER
 
 
 @dataclass(frozen=True)
@@ -462,12 +468,19 @@ class Unit:
     team: Team
     pos: Pos
     original_pos: Pos  # Where the unit spawned (for returning home)
+    unit_type: UnitType = UnitType.FIGHTER
     plan: Plan = field(default_factory=Plan)
     # Observations since last sync with home base
     observation_log: ObservationLog = field(default_factory=dict)
     last_sync_tick: Timestamp = 0
-    visibility_radius: int = 5
     carrying_food: int = 0
+
+    @property
+    def visibility_radius(self) -> int:
+        """Get visibility radius based on unit type."""
+        if self.unit_type == UnitType.SCOUT:
+            return 10  # Scouts have 2x visibility
+        return 5  # Fighters have normal visibility
 
     def home_pos(self) -> Pos:
         """Get this unit's original spawn position (for returning home)."""
@@ -505,15 +518,15 @@ def make_game(
         grid_height=grid_height,
     )
 
+    # Create starting units: 1 fighter and 1 scout per team
+    red_positions = random.sample(list(red_base.cells), 2)
+    blue_positions = random.sample(list(blue_base.cells), 2)
+
     units_list = [
-        *[
-            Unit(_generate_unit_id(), Team.RED, pos, pos)
-            for pos in random.sample(list(red_base.cells), 3)
-        ],
-        *[
-            Unit(_generate_unit_id(), Team.BLUE, pos, pos)
-            for pos in random.sample(list(blue_base.cells), 3)
-        ],
+        Unit(_generate_unit_id(), Team.RED, red_positions[0], red_positions[0], unit_type=UnitType.FIGHTER),
+        Unit(_generate_unit_id(), Team.RED, red_positions[1], red_positions[1], unit_type=UnitType.SCOUT),
+        Unit(_generate_unit_id(), Team.BLUE, blue_positions[0], blue_positions[0], unit_type=UnitType.FIGHTER),
+        Unit(_generate_unit_id(), Team.BLUE, blue_positions[1], blue_positions[1], unit_type=UnitType.SCOUT),
     ]
     return GameState(
         grid_width=grid_width,
@@ -535,6 +548,7 @@ class GameState:
     tick: Timestamp = 0
     units: dict[UnitId, Unit] = field(default_factory=dict)
     food: dict[Pos, int] = field(default_factory=dict)
+    unit_disposition: dict[Team, UnitType] = field(default_factory=lambda: {Team.RED: UnitType.FIGHTER, Team.BLUE: UnitType.FIGHTER})
 
     def get_base_region(self, team: Team) -> Region:
         """Get a team's base region."""
@@ -582,7 +596,7 @@ class GameState:
         # Check for units
         for unit in self.units.values():
             if unit.pos == pos:
-                contents.append(UnitPresent(unit.team, unit.id))
+                contents.append(UnitPresent(unit.team, unit.id, unit.unit_type))
 
         # Check for bases (any cell in the region)
         if self.get_base_region(Team.RED).contains(pos):
@@ -652,7 +666,11 @@ def tick_game(state: GameState) -> None:
             teams_at_pos = {unit.team for unit in units_at_pos}
             if len(teams_at_pos) > 1:
                 # Multiple teams at same position - mutual annihilation
-                units_to_remove.update([unit.id for unit in units_at_pos])
+                # Scouts don't participate in combat - they don't kill enemies
+                fighters_to_remove = [
+                    unit.id for unit in units_at_pos if unit.unit_type != UnitType.SCOUT
+                ]
+                units_to_remove.update(fighters_to_remove)
 
     state.kill_units(*units_to_remove)
 
@@ -678,6 +696,7 @@ def tick_game(state: GameState) -> None:
                             team=u.team,
                             pos=closest_cell,
                             original_pos=closest_cell,
+                            unit_type=state.unit_disposition[team],
                         )
                     )
                     unoccupied_cells.remove(closest_cell)

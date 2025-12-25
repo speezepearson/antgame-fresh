@@ -196,7 +196,6 @@ class TestSerialization:
             pos=Pos(5, 6),
             original_pos=Pos(5, 6),
             carrying_food=3,
-            visibility_radius=5,
             plan=Plan(orders=[Move(target=Pos(10, 10))]),
             observation_log={},
             last_sync_tick=Timestamp(0),

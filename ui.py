@@ -32,6 +32,7 @@ from mechanics import (
     tick_game,
     Unit,
     UnitId,
+    UnitType,
     Order,
     Condition,
     Action,
@@ -57,18 +58,26 @@ class TickControls:
 
 
 @dataclass
+class DispositionControls:
+    """UI controls for unit disposition."""
+
+    fighter_btn: arcade.gui.UIFlatButton
+    scout_btn: arcade.gui.UIFlatButton
+
+
+@dataclass
 class PlanControls:
     """UI controls for plan editing."""
 
-    text_area: arcade.gui.UITextArea
+    text_area: arcade.gui.UITextArea | None
     last_plan_text: str
-    issue_plan_btn: arcade.gui.UIFlatButton
-    clear_plan_btn: arcade.gui.UIFlatButton
-    selection_label: arcade.gui.UILabel
-    fight_checkbox: arcade.gui.UIFlatButton
-    flee_checkbox: arcade.gui.UIFlatButton
-    forage_checkbox: arcade.gui.UIFlatButton
-    come_back_checkbox: arcade.gui.UIFlatButton
+    issue_plan_btn: arcade.gui.UIFlatButton | None
+    clear_plan_btn: arcade.gui.UIFlatButton | None
+    selection_label: arcade.gui.UILabel | None
+    fight_checkbox: arcade.gui.UIFlatButton | None
+    flee_checkbox: arcade.gui.UIFlatButton | None
+    forage_checkbox: arcade.gui.UIFlatButton | None
+    come_back_checkbox: arcade.gui.UIFlatButton | None
     checkbox_states: dict[str, bool] = field(default_factory=dict)
 
 
@@ -76,6 +85,7 @@ class PlanControls:
 class PlayerView:
     knowledge: PlayerKnowledge
     tick_controls: TickControls | None = None
+    disposition_controls: DispositionControls | None = None
     plan_controls: PlanControls | None = None
     freeze_frame: Timestamp | None = None
     selected_unit_id: UnitId | None = None
@@ -175,18 +185,35 @@ def draw_unit_at(
     window_height: int,
     selected: bool = False,
     outline_only: bool = False,
+    unit_type: UnitType = UnitType.FIGHTER,
 ) -> None:
     color = (255, 100, 100) if team == Team.RED else (100, 100, 255)
     center_x = offset_x + pos.x * TILE_SIZE + TILE_SIZE // 2
     center_y = window_height - (offset_y + pos.y * TILE_SIZE + TILE_SIZE // 2)
-    radius = TILE_SIZE // 3
 
-    if outline_only:
-        arcade.draw_circle_outline(center_x, center_y, radius, color, 1)
+    if unit_type == UnitType.SCOUT:
+        # Draw square for scouts
+        size = TILE_SIZE // 3
+        left = center_x - size
+        bottom = center_y - size
+        width = size * 2
+        height = size * 2
+
+        if outline_only:
+            arcade.draw_lbwh_rectangle_outline(left, bottom, width, height, color, 1)
+        else:
+            arcade.draw_lbwh_rectangle_filled(left, bottom, width, height, color)
+        if selected:
+            arcade.draw_lbwh_rectangle_outline(left - 3, bottom - 3, width + 6, height + 6, (255, 255, 0), 2)
     else:
-        arcade.draw_circle_filled(center_x, center_y, radius, color)
-    if selected:
-        arcade.draw_circle_outline(center_x, center_y, radius + 3, (255, 255, 0), 2)
+        # Draw circle for fighters
+        radius = TILE_SIZE // 3
+        if outline_only:
+            arcade.draw_circle_outline(center_x, center_y, radius, color, 1)
+        else:
+            arcade.draw_circle_filled(center_x, center_y, radius, color)
+        if selected:
+            arcade.draw_circle_outline(center_x, center_y, radius + 3, (255, 255, 0), 2)
 
 
 def draw_food(
@@ -304,6 +331,7 @@ def draw_god_view(
             offset_x,
             offset_y,
             window_height,
+            unit_type=unit.unit_type,
         )
 
 
@@ -384,6 +412,7 @@ def draw_player_view(
                         offset_y,
                         window_height,
                         outline_only=pos not in cur_observations,
+                        unit_type=contents.unit_type,
                     )
                 elif isinstance(contents, FoodPresent):
                     draw_food(
@@ -418,6 +447,7 @@ def draw_player_view(
                         offset_y,
                         window_height,
                         outline_only=False,
+                        unit_type=contents.unit_type,
                     )
                 elif isinstance(contents, FoodPresent):
                     draw_food(
@@ -436,8 +466,13 @@ def draw_player_view(
             predicted_pos = trajectory.positions[
                 min(trajectory_index, len(trajectory.positions) - 1)
             ]
+            # Get unit type from last_seen
+            unit_type = UnitType.FIGHTER
+            if trajectory.unit_id in view.knowledge.last_seen:
+                _, unit = view.knowledge.last_seen[trajectory.unit_id]
+                unit_type = unit.unit_type
             draw_unit_at(
-                team, predicted_pos, offset_x, offset_y, window_height, outline_only=True
+                team, predicted_pos, offset_x, offset_y, window_height, outline_only=True, unit_type=unit_type
             )
 
 
@@ -518,11 +553,20 @@ def make_interrupts_from_checkboxes(
     return interrupts
 
 
-def make_initial_working_plan_interrupts() -> list[Interrupt[Any]]:
-    """Make the initial interrupts for a working plan (matches default checkbox states)."""
-    return make_interrupts_from_checkboxes(
-        fight=True, flee=True, forage=True, come_back=True
-    )
+def make_initial_working_plan_interrupts(unit_type: UnitType) -> list[Interrupt[Any]]:
+    """Make the initial interrupts for a working plan based on unit type.
+
+    Fighters get: fight, forage, come home
+    Scouts get: flee, forage, come home
+    """
+    if unit_type == UnitType.SCOUT:
+        return make_interrupts_from_checkboxes(
+            fight=False, flee=True, forage=True, come_back=True
+        )
+    else:  # FIGHTER
+        return make_interrupts_from_checkboxes(
+            fight=True, flee=False, forage=True, come_back=True
+        )
 
 
 class AntGameWindow(arcade.Window):
@@ -592,13 +636,26 @@ class AntGameWindow(arcade.Window):
                     blue_view.tick_controls.slider.value = blue_view_tick / current_tick
                     blue_view.tick_controls.tick_label.text = f"t={blue_view_tick}"
 
+        # Update disposition button appearance based on current setting
+        if isinstance(self.game_ctx.client, LocalClient):
+            for team in Team:
+                view = self.game_ctx.views[team]
+                if view.disposition_controls:
+                    current_disposition = self.game_ctx.client.state.unit_disposition[team]
+                    if current_disposition == UnitType.FIGHTER:
+                        view.disposition_controls.fighter_btn.text = "Fighter ✓"
+                        view.disposition_controls.scout_btn.text = "Scout"
+                    else:
+                        view.disposition_controls.fighter_btn.text = "Fighter"
+                        view.disposition_controls.scout_btn.text = "Scout ✓"
+
         # Handle plan controls for each team
         for team in Team:
             view = self.game_ctx.views[team]
             plan_offset_x = self.game_ctx.team_offsets[team]
 
-            # Plan area layout (same as original)
-            plan_y = self.game_ctx.slider_y + 30
+            # Plan area layout (moved down to avoid overlapping disposition buttons)
+            plan_y = self.game_ctx.slider_y + 55
             arcade_plan_y = self.height - plan_y
             plan_box_width = self.game_ctx.map_pixel_size
             plan_box_height = 180
@@ -707,18 +764,23 @@ class AntGameWindow(arcade.Window):
 
                     # Initialize or update plan controls
                     if view.plan_controls is None:
-                        # First time creating plan controls - initialize with all checkboxes checked
+                        # First time creating plan controls - initialize checkboxes based on unit type
+                        if selected_unit.unit_type == UnitType.SCOUT:
+                            default_checkboxes = {"fight": False, "flee": True, "forage": True, "come_back": True}
+                        else:  # FIGHTER
+                            default_checkboxes = {"fight": True, "flee": False, "forage": True, "come_back": True}
+
                         view.plan_controls = PlanControls(
-                            text_area=None,  # type: ignore
+                            text_area=None,
                             last_plan_text=plan_text,
-                            issue_plan_btn=None,  # type: ignore
-                            clear_plan_btn=None,  # type: ignore
-                            selection_label=None,  # type: ignore
-                            fight_checkbox=None,  # type: ignore
-                            flee_checkbox=None,  # type: ignore
-                            forage_checkbox=None,  # type: ignore
-                            come_back_checkbox=None,  # type: ignore
-                            checkbox_states={"fight": True, "flee": True, "forage": True, "come_back": True},
+                            issue_plan_btn=None,
+                            clear_plan_btn=None,
+                            selection_label=None,
+                            fight_checkbox=None,
+                            flee_checkbox=None,
+                            forage_checkbox=None,
+                            come_back_checkbox=None,
+                            checkbox_states=default_checkboxes,
                         )
                     else:
                         # Update plan text while preserving checkbox states
@@ -849,7 +911,7 @@ class AntGameWindow(arcade.Window):
             view = self.game_ctx.views[team]
             if view.selected_unit_id is not None and view.working_plan is not None:
                 plan_offset_x = self.game_ctx.team_offsets[team]
-                plan_y = self.game_ctx.slider_y + 30
+                plan_y = self.game_ctx.slider_y + 55
                 arcade_plan_y = self.height - plan_y
                 plan_box_height = 180
                 btn_y_offset = -plan_box_height - 5
@@ -871,13 +933,26 @@ class AntGameWindow(arcade.Window):
                 # Check Clear button (60x20 at plan_offset_x + 90, btn_y)
                 if (plan_offset_x + 90 <= x <= plan_offset_x + 150 and
                     btn_y <= y <= btn_y + 20):
-                    # Clear button clicked
-                    view.working_plan = Plan(interrupts=make_initial_working_plan_interrupts())
-                    # Reset checkboxes to default states (all checked)
+                    # Clear button clicked - get unit type for proper defaults
+                    knowledge = self.game_ctx.client.get_player_knowledge(
+                        team, self.game_ctx.client.get_current_tick()
+                    )
+                    unit_type = UnitType.FIGHTER  # default
+                    if view.selected_unit_id in knowledge.last_seen:
+                        _, selected_unit = knowledge.last_seen[view.selected_unit_id]
+                        unit_type = selected_unit.unit_type
+
+                    view.working_plan = Plan(interrupts=make_initial_working_plan_interrupts(unit_type))
+                    # Reset checkboxes to default states based on unit type
                     if view.plan_controls:
-                        view.plan_controls.checkbox_states = {
-                            "fight": True, "flee": True, "forage": True, "come_back": True
-                        }
+                        if unit_type == UnitType.SCOUT:
+                            view.plan_controls.checkbox_states = {
+                                "fight": False, "flee": True, "forage": True, "come_back": True
+                            }
+                        else:  # FIGHTER
+                            view.plan_controls.checkbox_states = {
+                                "fight": True, "flee": False, "forage": True, "come_back": True
+                            }
                     return
 
                 # Check checkbox clicks (80x20 each, positioned below buttons)
@@ -988,8 +1063,16 @@ class AntGameWindow(arcade.Window):
                 elif view.selected_unit_id is not None:
                     # Single click with unit selected: append Move order to working plan
                     if view.working_plan is None:
+                        # Look up the selected unit to get its type
+                        knowledge = self.game_ctx.client.get_player_knowledge(
+                            team, self.game_ctx.client.get_current_tick()
+                        )
+                        unit_type = UnitType.FIGHTER  # default
+                        if view.selected_unit_id in knowledge.last_seen:
+                            _, selected_unit = knowledge.last_seen[view.selected_unit_id]
+                            unit_type = selected_unit.unit_type
                         view.working_plan = Plan(
-                            interrupts=make_initial_working_plan_interrupts()
+                            interrupts=make_initial_working_plan_interrupts(unit_type)
                         )
                     view.working_plan.orders.append(Move(target=grid_pos))
                 else:
@@ -999,7 +1082,7 @@ class AntGameWindow(arcade.Window):
                         view.selected_unit_id = unit.id
                         # Initialize working plan when selecting a unit
                         view.working_plan = Plan(
-                            interrupts=make_initial_working_plan_interrupts()
+                            interrupts=make_initial_working_plan_interrupts(unit.unit_type)
                         )
 
 
@@ -1245,9 +1328,29 @@ def initialize_game() -> tuple[GameContext, AntGameWindow]:
         live_btn=blue_live_btn,
     )
 
-    # Assign tick controls to views
+    # Create disposition controls for RED team
+    red_fighter_btn = arcade.gui.UIFlatButton(text="Fighter", width=70, height=20)
+    red_scout_btn = arcade.gui.UIFlatButton(text="Scout", width=70, height=20)
+
+    red_disposition_controls = DispositionControls(
+        fighter_btn=red_fighter_btn,
+        scout_btn=red_scout_btn,
+    )
+
+    # Create disposition controls for BLUE team
+    blue_fighter_btn = arcade.gui.UIFlatButton(text="Fighter", width=70, height=20)
+    blue_scout_btn = arcade.gui.UIFlatButton(text="Scout", width=70, height=20)
+
+    blue_disposition_controls = DispositionControls(
+        fighter_btn=blue_fighter_btn,
+        scout_btn=blue_scout_btn,
+    )
+
+    # Assign tick controls and disposition controls to views
     ctx.views[Team.RED].tick_controls = red_tick_controls
+    ctx.views[Team.RED].disposition_controls = red_disposition_controls
     ctx.views[Team.BLUE].tick_controls = blue_tick_controls
+    ctx.views[Team.BLUE].disposition_controls = blue_disposition_controls
 
     # Add slider event handlers
     def on_red_slider_change(event: Any) -> None:
@@ -1266,6 +1369,19 @@ def initialize_game() -> tuple[GameContext, AntGameWindow]:
     def on_blue_live_click(event: Any) -> None:
         ctx.views[Team.BLUE].freeze_frame = None
 
+    # Disposition button handlers
+    def on_red_fighter_click(event: Any) -> None:
+        ctx.client.set_unit_disposition(Team.RED, UnitType.FIGHTER)
+
+    def on_red_scout_click(event: Any) -> None:
+        ctx.client.set_unit_disposition(Team.RED, UnitType.SCOUT)
+
+    def on_blue_fighter_click(event: Any) -> None:
+        ctx.client.set_unit_disposition(Team.BLUE, UnitType.FIGHTER)
+
+    def on_blue_scout_click(event: Any) -> None:
+        ctx.client.set_unit_disposition(Team.BLUE, UnitType.SCOUT)
+
     # Register event handlers using decorators
     @red_slider.event("on_change")
     def _red_slider_change(event: Any) -> None:
@@ -1283,11 +1399,43 @@ def initialize_game() -> tuple[GameContext, AntGameWindow]:
     def _blue_live_click(event: Any) -> None:
         on_blue_live_click(event)
 
+    @red_fighter_btn.event("on_click")
+    def _red_fighter_click(event: Any) -> None:
+        on_red_fighter_click(event)
+
+    @red_scout_btn.event("on_click")
+    def _red_scout_click(event: Any) -> None:
+        on_red_scout_click(event)
+
+    @blue_fighter_btn.event("on_click")
+    def _blue_fighter_click(event: Any) -> None:
+        on_blue_fighter_click(event)
+
+    @blue_scout_btn.event("on_click")
+    def _blue_scout_click(event: Any) -> None:
+        on_blue_scout_click(event)
+
     # Layout widgets using UIAnchorLayout
     # Convert from pygame top-left coordinates to arcade bottom-left
     arcade_slider_y = window_height - slider_y - 20
+    disposition_y = slider_y + 25
+    arcade_disposition_y = window_height - disposition_y - 20
 
-    # RED team widgets
+    # RED team disposition buttons
+    red_disposition_box = arcade.gui.UIBoxLayout(vertical=False, space_between=5)
+    red_disposition_box.add(red_fighter_btn)
+    red_disposition_box.add(red_scout_btn)
+    red_disposition_anchor = arcade.gui.UIAnchorLayout()
+    red_disposition_anchor.add(
+        red_disposition_box,
+        anchor_x="left",
+        anchor_y="bottom",
+        align_x=red_offset_x,
+        align_y=arcade_disposition_y
+    )
+    ui_manager.add(red_disposition_anchor)
+
+    # RED team slider widgets
     red_h_box = arcade.gui.UIBoxLayout(vertical=False, space_between=5)
     red_h_box.add(red_slider)
     red_h_box.add(red_tick_label)
@@ -1302,7 +1450,21 @@ def initialize_game() -> tuple[GameContext, AntGameWindow]:
     )
     ui_manager.add(red_anchor)
 
-    # BLUE team widgets
+    # BLUE team disposition buttons
+    blue_disposition_box = arcade.gui.UIBoxLayout(vertical=False, space_between=5)
+    blue_disposition_box.add(blue_fighter_btn)
+    blue_disposition_box.add(blue_scout_btn)
+    blue_disposition_anchor = arcade.gui.UIAnchorLayout()
+    blue_disposition_anchor.add(
+        blue_disposition_box,
+        anchor_x="left",
+        anchor_y="bottom",
+        align_x=blue_offset_x,
+        align_y=arcade_disposition_y
+    )
+    ui_manager.add(blue_disposition_anchor)
+
+    # BLUE team slider widgets
     blue_h_box = arcade.gui.UIBoxLayout(vertical=False, space_between=5)
     blue_h_box.add(blue_slider)
     blue_h_box.add(blue_tick_label)
