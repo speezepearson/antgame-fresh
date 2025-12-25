@@ -152,8 +152,9 @@ class Move(Order):
         elif dy != 0:
             unit.pos = Pos(unit.pos.x, unit.pos.y + dy)
 
-        # If there's food at the new position, pick it up
-        unit.carrying_food += state.food.pop(unit.pos, 0)
+        # If there's food at the new position, pick it up (unless it's in your own base)
+        if unit.pos not in state.get_base_region(unit.team).cells:
+            unit.carrying_food += state.food.pop(unit.pos, 0)
 
 
 T_co = TypeVar("T_co", covariant=True)
@@ -277,6 +278,7 @@ class FoodInRangeCondition:
             pos
             for pos, contents_list in observations.items()
             if 0 < pos.manhattan_distance(unit.pos) <= self.distance
+            and not any(isinstance(x, BasePresent) and x.team == unit.team for x in contents_list)  # don't pick up food in your own base
             and any(isinstance(x, FoodPresent) for x in contents_list)
         ]
         if not food_posns:
