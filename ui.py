@@ -553,11 +553,20 @@ def make_interrupts_from_checkboxes(
     return interrupts
 
 
-def make_initial_working_plan_interrupts() -> list[Interrupt[Any]]:
-    """Make the initial interrupts for a working plan (matches default checkbox states)."""
-    return make_interrupts_from_checkboxes(
-        fight=True, flee=True, forage=True, come_back=True
-    )
+def make_initial_working_plan_interrupts(unit_type: UnitType) -> list[Interrupt[Any]]:
+    """Make the initial interrupts for a working plan based on unit type.
+
+    Fighters get: fight, forage, come home
+    Scouts get: flee, forage, come home
+    """
+    if unit_type == UnitType.SCOUT:
+        return make_interrupts_from_checkboxes(
+            fight=False, flee=True, forage=True, come_back=True
+        )
+    else:  # FIGHTER
+        return make_interrupts_from_checkboxes(
+            fight=True, flee=False, forage=True, come_back=True
+        )
 
 
 class AntGameWindow(arcade.Window):
@@ -755,7 +764,12 @@ class AntGameWindow(arcade.Window):
 
                     # Initialize or update plan controls
                     if view.plan_controls is None:
-                        # First time creating plan controls - initialize with all checkboxes checked
+                        # First time creating plan controls - initialize checkboxes based on unit type
+                        if selected_unit.unit_type == UnitType.SCOUT:
+                            default_checkboxes = {"fight": False, "flee": True, "forage": True, "come_back": True}
+                        else:  # FIGHTER
+                            default_checkboxes = {"fight": True, "flee": False, "forage": True, "come_back": True}
+
                         view.plan_controls = PlanControls(
                             text_area=None,
                             last_plan_text=plan_text,
@@ -766,7 +780,7 @@ class AntGameWindow(arcade.Window):
                             flee_checkbox=None,
                             forage_checkbox=None,
                             come_back_checkbox=None,
-                            checkbox_states={"fight": True, "flee": True, "forage": True, "come_back": True},
+                            checkbox_states=default_checkboxes,
                         )
                     else:
                         # Update plan text while preserving checkbox states
@@ -919,13 +933,26 @@ class AntGameWindow(arcade.Window):
                 # Check Clear button (60x20 at plan_offset_x + 90, btn_y)
                 if (plan_offset_x + 90 <= x <= plan_offset_x + 150 and
                     btn_y <= y <= btn_y + 20):
-                    # Clear button clicked
-                    view.working_plan = Plan(interrupts=make_initial_working_plan_interrupts())
-                    # Reset checkboxes to default states (all checked)
+                    # Clear button clicked - get unit type for proper defaults
+                    knowledge = self.game_ctx.client.get_player_knowledge(
+                        team, self.game_ctx.client.get_current_tick()
+                    )
+                    unit_type = UnitType.FIGHTER  # default
+                    if view.selected_unit_id in knowledge.last_seen:
+                        _, selected_unit = knowledge.last_seen[view.selected_unit_id]
+                        unit_type = selected_unit.unit_type
+
+                    view.working_plan = Plan(interrupts=make_initial_working_plan_interrupts(unit_type))
+                    # Reset checkboxes to default states based on unit type
                     if view.plan_controls:
-                        view.plan_controls.checkbox_states = {
-                            "fight": True, "flee": True, "forage": True, "come_back": True
-                        }
+                        if unit_type == UnitType.SCOUT:
+                            view.plan_controls.checkbox_states = {
+                                "fight": False, "flee": True, "forage": True, "come_back": True
+                            }
+                        else:  # FIGHTER
+                            view.plan_controls.checkbox_states = {
+                                "fight": True, "flee": False, "forage": True, "come_back": True
+                            }
                     return
 
                 # Check checkbox clicks (80x20 each, positioned below buttons)
@@ -1036,8 +1063,16 @@ class AntGameWindow(arcade.Window):
                 elif view.selected_unit_id is not None:
                     # Single click with unit selected: append Move order to working plan
                     if view.working_plan is None:
+                        # Look up the selected unit to get its type
+                        knowledge = self.game_ctx.client.get_player_knowledge(
+                            team, self.game_ctx.client.get_current_tick()
+                        )
+                        unit_type = UnitType.FIGHTER  # default
+                        if view.selected_unit_id in knowledge.last_seen:
+                            _, selected_unit = knowledge.last_seen[view.selected_unit_id]
+                            unit_type = selected_unit.unit_type
                         view.working_plan = Plan(
-                            interrupts=make_initial_working_plan_interrupts()
+                            interrupts=make_initial_working_plan_interrupts(unit_type)
                         )
                     view.working_plan.orders.append(Move(target=grid_pos))
                 else:
@@ -1047,7 +1082,7 @@ class AntGameWindow(arcade.Window):
                         view.selected_unit_id = unit.id
                         # Initialize working plan when selecting a unit
                         view.working_plan = Plan(
-                            interrupts=make_initial_working_plan_interrupts()
+                            interrupts=make_initial_working_plan_interrupts(unit.unit_type)
                         )
 
 
