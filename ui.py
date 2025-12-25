@@ -1254,179 +1254,90 @@ def initialize_game() -> tuple[GameContext, AntGameWindow]:
     ctx.ui_manager = ui_manager
     ui_manager.enable()
 
-    # Now that window exists, create UI widgets
-    # Create time sliders for RED team
-    red_slider = arcade.gui.UISlider(value=0, min_value=0, max_value=1, width=slider_width, height=20)
-    red_tick_label = arcade.gui.UILabel(text="t=0", width=45, height=20)
-    red_live_btn = arcade.gui.UIFlatButton(text="LIVE", width=50, height=20)
-
-    red_tick_controls = TickControls(
-        slider=red_slider,
-        tick_label=red_tick_label,
-        live_btn=red_live_btn,
-    )
-
-    # Create time sliders for BLUE team
-    blue_slider = arcade.gui.UISlider(value=0, min_value=0, max_value=1, width=slider_width, height=20)
-    blue_tick_label = arcade.gui.UILabel(text="t=0", width=45, height=20)
-    blue_live_btn = arcade.gui.UIFlatButton(text="LIVE", width=50, height=20)
-
-    blue_tick_controls = TickControls(
-        slider=blue_slider,
-        tick_label=blue_tick_label,
-        live_btn=blue_live_btn,
-    )
-
-    # Create disposition controls for RED team
-    red_fighter_btn = arcade.gui.UIFlatButton(text="Fighter", width=70, height=20)
-    red_scout_btn = arcade.gui.UIFlatButton(text="Scout", width=70, height=20)
-
-    red_disposition_controls = DispositionControls(
-        fighter_btn=red_fighter_btn,
-        scout_btn=red_scout_btn,
-    )
-
-    # Create disposition controls for BLUE team
-    blue_fighter_btn = arcade.gui.UIFlatButton(text="Fighter", width=70, height=20)
-    blue_scout_btn = arcade.gui.UIFlatButton(text="Scout", width=70, height=20)
-
-    blue_disposition_controls = DispositionControls(
-        fighter_btn=blue_fighter_btn,
-        scout_btn=blue_scout_btn,
-    )
-
-    # Assign tick controls and disposition controls to views
-    ctx.views[Team.RED].tick_controls = red_tick_controls
-    ctx.views[Team.RED].disposition_controls = red_disposition_controls
-    ctx.views[Team.BLUE].tick_controls = blue_tick_controls
-    ctx.views[Team.BLUE].disposition_controls = blue_disposition_controls
-
-    # Add slider event handlers
-    def on_red_slider_change(event: Any) -> None:
-        current_tick = ctx.client.get_current_tick()
-        if current_tick > 0:
-            ctx.views[Team.RED].freeze_frame = int(red_slider.value * current_tick)
-
-    def on_blue_slider_change(event: Any) -> None:
-        current_tick = ctx.client.get_current_tick()
-        if current_tick > 0:
-            ctx.views[Team.BLUE].freeze_frame = int(blue_slider.value * current_tick)
-
-    def on_red_live_click(event: Any) -> None:
-        ctx.views[Team.RED].freeze_frame = None
-
-    def on_blue_live_click(event: Any) -> None:
-        ctx.views[Team.BLUE].freeze_frame = None
-
-    # Spawn button handlers
-    def on_red_fighter_click(event: Any) -> None:
-        ctx.client.spawn_unit(Team.RED, UnitType.FIGHTER)
-
-    def on_red_scout_click(event: Any) -> None:
-        ctx.client.spawn_unit(Team.RED, UnitType.SCOUT)
-
-    def on_blue_fighter_click(event: Any) -> None:
-        ctx.client.spawn_unit(Team.BLUE, UnitType.FIGHTER)
-
-    def on_blue_scout_click(event: Any) -> None:
-        ctx.client.spawn_unit(Team.BLUE, UnitType.SCOUT)
-
-    # Register event handlers using decorators
-    @red_slider.event("on_change")
-    def _red_slider_change(event: Any) -> None:
-        on_red_slider_change(event)
-
-    @blue_slider.event("on_change")
-    def _blue_slider_change(event: Any) -> None:
-        on_blue_slider_change(event)
-
-    @red_live_btn.event("on_click")
-    def _red_live_click(event: Any) -> None:
-        on_red_live_click(event)
-
-    @blue_live_btn.event("on_click")
-    def _blue_live_click(event: Any) -> None:
-        on_blue_live_click(event)
-
-    @red_fighter_btn.event("on_click")
-    def _red_fighter_click(event: Any) -> None:
-        on_red_fighter_click(event)
-
-    @red_scout_btn.event("on_click")
-    def _red_scout_click(event: Any) -> None:
-        on_red_scout_click(event)
-
-    @blue_fighter_btn.event("on_click")
-    def _blue_fighter_click(event: Any) -> None:
-        on_blue_fighter_click(event)
-
-    @blue_scout_btn.event("on_click")
-    def _blue_scout_click(event: Any) -> None:
-        on_blue_scout_click(event)
-
-    # Layout widgets using UIAnchorLayout
+    # Now that window exists, create UI widgets for both teams
     # Convert from pygame top-left coordinates to arcade bottom-left
     arcade_slider_y = window_height - slider_y - 20
     disposition_y = slider_y + 25
     arcade_disposition_y = window_height - disposition_y - 20
 
-    # RED team disposition buttons
-    red_disposition_box = arcade.gui.UIBoxLayout(vertical=False, space_between=5)
-    red_disposition_box.add(red_fighter_btn)
-    red_disposition_box.add(red_scout_btn)
-    red_disposition_anchor = arcade.gui.UIAnchorLayout()
-    red_disposition_anchor.add(
-        red_disposition_box,
-        anchor_x="left",
-        anchor_y="bottom",
-        align_x=red_offset_x,
-        align_y=arcade_disposition_y
-    )
-    ui_manager.add(red_disposition_anchor)
+    def create_player_ui(team: Team, offset_x: int) -> None:
+        """Create and register all UI controls for a player's team."""
+        view = ctx.views[team]
 
-    # RED team slider widgets
-    red_h_box = arcade.gui.UIBoxLayout(vertical=False, space_between=5)
-    red_h_box.add(red_slider)
-    red_h_box.add(red_tick_label)
-    red_h_box.add(red_live_btn)
-    red_anchor = arcade.gui.UIAnchorLayout()
-    red_anchor.add(
-        red_h_box,
-        anchor_x="left",
-        anchor_y="bottom",
-        align_x=red_offset_x,
-        align_y=arcade_slider_y
-    )
-    ui_manager.add(red_anchor)
+        # Create tick controls
+        slider = arcade.gui.UISlider(value=0, min_value=0, max_value=1, width=slider_width, height=20)
+        tick_label = arcade.gui.UILabel(text="t=0", width=45, height=20)
+        live_btn = arcade.gui.UIFlatButton(text="LIVE", width=50, height=20)
 
-    # BLUE team disposition buttons
-    blue_disposition_box = arcade.gui.UIBoxLayout(vertical=False, space_between=5)
-    blue_disposition_box.add(blue_fighter_btn)
-    blue_disposition_box.add(blue_scout_btn)
-    blue_disposition_anchor = arcade.gui.UIAnchorLayout()
-    blue_disposition_anchor.add(
-        blue_disposition_box,
-        anchor_x="left",
-        anchor_y="bottom",
-        align_x=blue_offset_x,
-        align_y=arcade_disposition_y
-    )
-    ui_manager.add(blue_disposition_anchor)
+        tick_controls = TickControls(
+            slider=slider,
+            tick_label=tick_label,
+            live_btn=live_btn,
+        )
 
-    # BLUE team slider widgets
-    blue_h_box = arcade.gui.UIBoxLayout(vertical=False, space_between=5)
-    blue_h_box.add(blue_slider)
-    blue_h_box.add(blue_tick_label)
-    blue_h_box.add(blue_live_btn)
-    blue_anchor = arcade.gui.UIAnchorLayout()
-    blue_anchor.add(
-        blue_h_box,
-        anchor_x="left",
-        anchor_y="bottom",
-        align_x=blue_offset_x,
-        align_y=arcade_slider_y
-    )
-    ui_manager.add(blue_anchor)
+        # Create disposition controls
+        fighter_btn = arcade.gui.UIFlatButton(text="Fighter", width=70, height=20)
+        scout_btn = arcade.gui.UIFlatButton(text="Scout", width=70, height=20)
+
+        disposition_controls = DispositionControls(
+            fighter_btn=fighter_btn,
+            scout_btn=scout_btn,
+        )
+
+        # Assign controls to view
+        view.tick_controls = tick_controls
+        view.disposition_controls = disposition_controls
+
+        # Register event handlers
+        @slider.event("on_change")
+        def on_slider_change(event: Any) -> None:
+            current_tick = ctx.client.get_current_tick()
+            if current_tick > 0:
+                view.freeze_frame = int(slider.value * current_tick)
+
+        @live_btn.event("on_click")
+        def on_live_click(event: Any) -> None:
+            view.freeze_frame = None
+
+        @fighter_btn.event("on_click")
+        def on_fighter_click(event: Any) -> None:
+            ctx.client.spawn_unit(team, UnitType.FIGHTER)
+
+        @scout_btn.event("on_click")
+        def on_scout_click(event: Any) -> None:
+            ctx.client.spawn_unit(team, UnitType.SCOUT)
+
+        # Layout disposition buttons
+        disposition_box = arcade.gui.UIBoxLayout(vertical=False, space_between=5)
+        disposition_box.add(fighter_btn)
+        disposition_box.add(scout_btn)
+        disposition_anchor = arcade.gui.UIAnchorLayout()
+        disposition_anchor.add(
+            disposition_box,
+            anchor_x="left",
+            anchor_y="bottom",
+            align_x=offset_x,
+            align_y=arcade_disposition_y
+        )
+        ui_manager.add(disposition_anchor)
+
+        # Layout slider widgets
+        h_box = arcade.gui.UIBoxLayout(vertical=False, space_between=5)
+        h_box.add(slider)
+        h_box.add(tick_label)
+        h_box.add(live_btn)
+        anchor = arcade.gui.UIAnchorLayout()
+        anchor.add(
+            h_box,
+            anchor_x="left",
+            anchor_y="bottom",
+            align_x=offset_x,
+            align_y=arcade_slider_y
+        )
+        ui_manager.add(anchor)
+
+    create_player_ui(Team.RED, red_offset_x)
+    create_player_ui(Team.BLUE, blue_offset_x)
 
     return ctx, window
 
