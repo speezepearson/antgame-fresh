@@ -911,7 +911,7 @@ class AntGameWindow(arcade.Window):
             view = self.game_ctx.views[team]
             if view.selected_unit_id is not None and view.working_plan is not None:
                 plan_offset_x = self.game_ctx.team_offsets[team]
-                plan_y = self.game_ctx.slider_y + 30
+                plan_y = self.game_ctx.slider_y + 55
                 arcade_plan_y = self.height - plan_y
                 plan_box_height = 180
                 btn_y_offset = -plan_box_height - 5
