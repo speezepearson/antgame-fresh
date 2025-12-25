@@ -64,6 +64,10 @@ class PlanControls:
     issue_plan_btn: pygame_gui.elements.UIButton
     clear_plan_btn: pygame_gui.elements.UIButton
     selection_label: pygame_gui.elements.UILabel
+    fight_checkbox: pygame_gui.elements.UIButton
+    flee_checkbox: pygame_gui.elements.UIButton
+    forage_checkbox: pygame_gui.elements.UIButton
+    come_back_checkbox: pygame_gui.elements.UIButton
 
 
 @dataclass
@@ -488,6 +492,29 @@ def make_default_interrupts() -> list[Interrupt[Any]]:
     ]
 
 
+def make_interrupts_from_checkboxes(
+    fight: bool, flee: bool, forage: bool, come_back: bool
+) -> list[Interrupt[Any]]:
+    """Build list of interrupts based on checkbox states."""
+    interrupts: list[Interrupt[Any]] = []
+    if fight:
+        interrupts.append(attack_nearby_enemy_interrupt)
+    if flee:
+        interrupts.append(flee_enemy_interrupt)
+    if forage:
+        interrupts.append(get_food_interrupt)
+    if come_back:
+        interrupts.append(go_home_when_done_interrupt)
+    return interrupts
+
+
+def make_initial_working_plan_interrupts() -> list[Interrupt[Any]]:
+    """Make the initial interrupts for a working plan (matches default checkbox states)."""
+    return make_interrupts_from_checkboxes(
+        fight=False, flee=False, forage=True, come_back=True
+    )
+
+
 def initialize_game() -> GameContext:
     """Parse arguments and initialize game state, pygame, and UI elements."""
     # Parse command-line arguments
@@ -801,6 +828,10 @@ def handle_events(ctx: GameContext) -> bool:
                             view.plan_controls.text_box.kill()
                             view.plan_controls.issue_plan_btn.kill()  # type: ignore[no-untyped-call]
                             view.plan_controls.clear_plan_btn.kill()  # type: ignore[no-untyped-call]
+                            view.plan_controls.fight_checkbox.kill()  # type: ignore[no-untyped-call]
+                            view.plan_controls.flee_checkbox.kill()  # type: ignore[no-untyped-call]
+                            view.plan_controls.forage_checkbox.kill()  # type: ignore[no-untyped-call]
+                            view.plan_controls.come_back_checkbox.kill()  # type: ignore[no-untyped-call]
                             view.plan_controls.selection_label.hide()  # type: ignore[no-untyped-call]
                             view.plan_controls = None
                         break
@@ -808,7 +839,73 @@ def handle_events(ctx: GameContext) -> bool:
                         # Clear plan for this team
                         if view.selected_unit_id is not None:
                             view.working_plan = Plan(
-                                interrupts=make_default_interrupts()
+                                interrupts=make_initial_working_plan_interrupts()
+                            )
+                            # Reset checkboxes to default states
+                            view.plan_controls.fight_checkbox.set_text("☐ fight")
+                            view.plan_controls.flee_checkbox.set_text("☐ flee")
+                            view.plan_controls.forage_checkbox.set_text("☑ forage")
+                            view.plan_controls.come_back_checkbox.set_text("☑ come back")
+                        break
+                    # Handle interrupt checkbox toggles
+                    elif event.ui_element == view.plan_controls.fight_checkbox:
+                        # Toggle fight checkbox
+                        current_text = view.plan_controls.fight_checkbox.text
+                        is_checked = current_text.startswith("☑")
+                        new_text = ("☐ fight" if is_checked else "☑ fight")
+                        view.plan_controls.fight_checkbox.set_text(new_text)
+                        # Update working plan interrupts
+                        if view.working_plan is not None:
+                            view.working_plan.interrupts = make_interrupts_from_checkboxes(
+                                fight=not is_checked,
+                                flee=view.plan_controls.flee_checkbox.text.startswith("☑"),
+                                forage=view.plan_controls.forage_checkbox.text.startswith("☑"),
+                                come_back=view.plan_controls.come_back_checkbox.text.startswith("☑"),
+                            )
+                        break
+                    elif event.ui_element == view.plan_controls.flee_checkbox:
+                        # Toggle flee checkbox
+                        current_text = view.plan_controls.flee_checkbox.text
+                        is_checked = current_text.startswith("☑")
+                        new_text = ("☐ flee" if is_checked else "☑ flee")
+                        view.plan_controls.flee_checkbox.set_text(new_text)
+                        # Update working plan interrupts
+                        if view.working_plan is not None:
+                            view.working_plan.interrupts = make_interrupts_from_checkboxes(
+                                fight=view.plan_controls.fight_checkbox.text.startswith("☑"),
+                                flee=not is_checked,
+                                forage=view.plan_controls.forage_checkbox.text.startswith("☑"),
+                                come_back=view.plan_controls.come_back_checkbox.text.startswith("☑"),
+                            )
+                        break
+                    elif event.ui_element == view.plan_controls.forage_checkbox:
+                        # Toggle forage checkbox
+                        current_text = view.plan_controls.forage_checkbox.text
+                        is_checked = current_text.startswith("☑")
+                        new_text = ("☐ forage" if is_checked else "☑ forage")
+                        view.plan_controls.forage_checkbox.set_text(new_text)
+                        # Update working plan interrupts
+                        if view.working_plan is not None:
+                            view.working_plan.interrupts = make_interrupts_from_checkboxes(
+                                fight=view.plan_controls.fight_checkbox.text.startswith("☑"),
+                                flee=view.plan_controls.flee_checkbox.text.startswith("☑"),
+                                forage=not is_checked,
+                                come_back=view.plan_controls.come_back_checkbox.text.startswith("☑"),
+                            )
+                        break
+                    elif event.ui_element == view.plan_controls.come_back_checkbox:
+                        # Toggle come back checkbox
+                        current_text = view.plan_controls.come_back_checkbox.text
+                        is_checked = current_text.startswith("☑")
+                        new_text = ("☐ come back" if is_checked else "☑ come back")
+                        view.plan_controls.come_back_checkbox.set_text(new_text)
+                        # Update working plan interrupts
+                        if view.working_plan is not None:
+                            view.working_plan.interrupts = make_interrupts_from_checkboxes(
+                                fight=view.plan_controls.fight_checkbox.text.startswith("☑"),
+                                flee=view.plan_controls.flee_checkbox.text.startswith("☑"),
+                                forage=view.plan_controls.forage_checkbox.text.startswith("☑"),
+                                come_back=not is_checked,
                             )
                         break
 
@@ -865,13 +962,17 @@ def handle_events(ctx: GameContext) -> bool:
                                 view.plan_controls.text_box.kill()
                                 view.plan_controls.issue_plan_btn.kill()  # type: ignore[no-untyped-call]
                                 view.plan_controls.clear_plan_btn.kill()  # type: ignore[no-untyped-call]
+                                view.plan_controls.fight_checkbox.kill()  # type: ignore[no-untyped-call]
+                                view.plan_controls.flee_checkbox.kill()  # type: ignore[no-untyped-call]
+                                view.plan_controls.forage_checkbox.kill()  # type: ignore[no-untyped-call]
+                                view.plan_controls.come_back_checkbox.kill()  # type: ignore[no-untyped-call]
                                 view.plan_controls.selection_label.hide()  # type: ignore[no-untyped-call]
                                 view.plan_controls = None
                     elif view.selected_unit_id is not None:
                         # Single click with unit selected: append Move order to working plan
                         if view.working_plan is None:
                             view.working_plan = Plan(
-                                interrupts=make_default_interrupts()
+                                interrupts=make_initial_working_plan_interrupts()
                             )
                         view.working_plan.orders.append(Move(target=grid_pos))
                     else:
@@ -881,7 +982,7 @@ def handle_events(ctx: GameContext) -> bool:
                             view.selected_unit_id = unit.id
                             # Initialize working plan when selecting a unit
                             view.working_plan = Plan(
-                                interrupts=make_default_interrupts()
+                                interrupts=make_initial_working_plan_interrupts()
                             )
 
     return True
@@ -964,6 +1065,10 @@ def draw_ui(ctx: GameContext) -> None:
                     view.plan_controls.text_box.kill()
                     view.plan_controls.issue_plan_btn.kill()  # type: ignore[no-untyped-call]
                     view.plan_controls.clear_plan_btn.kill()  # type: ignore[no-untyped-call]
+                    view.plan_controls.fight_checkbox.kill()  # type: ignore[no-untyped-call]
+                    view.plan_controls.flee_checkbox.kill()  # type: ignore[no-untyped-call]
+                    view.plan_controls.forage_checkbox.kill()  # type: ignore[no-untyped-call]
+                    view.plan_controls.come_back_checkbox.kill()  # type: ignore[no-untyped-call]
                     view.plan_controls.selection_label.hide()  # type: ignore[no-untyped-call]
                     view.plan_controls = None
                 continue
@@ -997,12 +1102,43 @@ def draw_ui(ctx: GameContext) -> None:
                     text="Clear",
                     manager=ctx.ui_manager,
                 )
+
+                # Create interrupt checkboxes
+                checkbox_y = btn_y + 25
+                checkbox_width = 80
+                checkbox_spacing = 90
+
+                fight_checkbox = pygame_gui.elements.UIButton(
+                    relative_rect=pygame.Rect(plan_offset_x, checkbox_y, checkbox_width, 20),
+                    text="☐ fight",
+                    manager=ctx.ui_manager,
+                )
+                flee_checkbox = pygame_gui.elements.UIButton(
+                    relative_rect=pygame.Rect(plan_offset_x + checkbox_spacing, checkbox_y, checkbox_width, 20),
+                    text="☐ flee",
+                    manager=ctx.ui_manager,
+                )
+                forage_checkbox = pygame_gui.elements.UIButton(
+                    relative_rect=pygame.Rect(plan_offset_x + checkbox_spacing * 2, checkbox_y, checkbox_width, 20),
+                    text="☑ forage",
+                    manager=ctx.ui_manager,
+                )
+                come_back_checkbox = pygame_gui.elements.UIButton(
+                    relative_rect=pygame.Rect(plan_offset_x + checkbox_spacing * 3, checkbox_y, checkbox_width, 20),
+                    text="☑ come back",
+                    manager=ctx.ui_manager,
+                )
+
                 view.plan_controls = PlanControls(
                     text_box=text_box,
                     last_plan_html="",
                     issue_plan_btn=issue_plan_btn,
                     clear_plan_btn=clear_plan_btn,
                     selection_label=selection_label,
+                    fight_checkbox=fight_checkbox,
+                    flee_checkbox=flee_checkbox,
+                    forage_checkbox=forage_checkbox,
+                    come_back_checkbox=come_back_checkbox,
                 )
 
             # Update selection label
@@ -1034,6 +1170,10 @@ def draw_ui(ctx: GameContext) -> None:
                 view.plan_controls.text_box.kill()
                 view.plan_controls.issue_plan_btn.kill()  # type: ignore[no-untyped-call]
                 view.plan_controls.clear_plan_btn.kill()  # type: ignore[no-untyped-call]
+                view.plan_controls.fight_checkbox.kill()  # type: ignore[no-untyped-call]
+                view.plan_controls.flee_checkbox.kill()  # type: ignore[no-untyped-call]
+                view.plan_controls.forage_checkbox.kill()  # type: ignore[no-untyped-call]
+                view.plan_controls.come_back_checkbox.kill()  # type: ignore[no-untyped-call]
                 view.plan_controls.selection_label.hide()  # type: ignore[no-untyped-call]
                 view.plan_controls = None
 
