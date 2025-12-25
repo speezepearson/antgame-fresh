@@ -109,6 +109,55 @@ class TestMove:
         move.execute_step(unit, state)
         assert unit.pos == Pos(5, 5)
 
+    def test_picks_up_food_when_moving_outside_own_base(self) -> None:
+        state = make_simple_game()
+        # Place food outside any base
+        food_pos = Pos(5, 5)
+        state.food[food_pos] = 3
+        unit = make_unit(Team.RED, Pos(4, 5))
+        state.upsert_units(unit)
+        move = Move(target=Pos(6, 5))
+
+        move.execute_step(unit, state)
+
+        assert unit.pos == food_pos
+        assert unit.carrying_food == 3
+        assert food_pos not in state.food
+
+    def test_does_not_pick_up_food_in_own_base(self) -> None:
+        state = make_simple_game(
+            red_base=Region(cells=frozenset({Pos(0, i) for i in range(5)}))
+        )
+        # Place food inside red base
+        food_pos = Pos(0, 2)
+        state.food[food_pos] = 3
+        unit = make_unit(Team.RED, Pos(0, 1))
+        state.upsert_units(unit)
+        move = Move(target=Pos(0, 3))
+
+        move.execute_step(unit, state)
+
+        assert unit.pos == food_pos
+        assert unit.carrying_food == 0  # Did not pick up food
+        assert state.food.get(food_pos) == 3  # Food still there
+
+    def test_picks_up_food_in_enemy_base(self) -> None:
+        state = make_simple_game(
+            blue_base=Region(cells=frozenset({Pos(9, i) for i in range(5)}))
+        )
+        # Place food inside blue base
+        food_pos = Pos(9, 2)
+        state.food[food_pos] = 2
+        unit = make_unit(Team.RED, Pos(9, 1))  # Red unit in blue base
+        state.upsert_units(unit)
+        move = Move(target=Pos(9, 3))
+
+        move.execute_step(unit, state)
+
+        assert unit.pos == food_pos
+        assert unit.carrying_food == 2  # Picked up food in enemy base
+        assert food_pos not in state.food
+
 
 class TestEnemyInRangeCondition:
     def test_fires_when_enemy_is_close(self) -> None:
@@ -176,6 +225,50 @@ class TestBaseVisibleCondition:
         condition = BaseVisibleCondition()
         observations: dict[Pos, list[CellContents]] = {Pos(10, 10): [Empty()]}
         assert not condition.evaluate(unit, observations)
+
+
+class TestFoodInRangeCondition:
+    def test_fires_when_food_is_nearby(self) -> None:
+        unit = make_unit(Team.RED, Pos(5, 5))
+        condition = FoodInRangeCondition(distance=3)
+        observations: dict[Pos, list[CellContents]] = {
+            Pos(7, 5): [FoodPresent(count=1)]  # Distance 2
+        }
+        assert condition.evaluate(unit, observations)
+
+    def test_does_not_fire_for_distant_food(self) -> None:
+        unit = make_unit(Team.RED, Pos(5, 5))
+        condition = FoodInRangeCondition(distance=3)
+        observations: dict[Pos, list[CellContents]] = {
+            Pos(10, 10): [FoodPresent(count=1)]  # Distance 10
+        }
+        assert not condition.evaluate(unit, observations)
+
+    def test_does_not_fire_for_food_at_unit_position(self) -> None:
+        unit = make_unit(Team.RED, Pos(5, 5))
+        condition = FoodInRangeCondition(distance=3)
+        observations: dict[Pos, list[CellContents]] = {
+            Pos(5, 5): [FoodPresent(count=1)]  # Distance 0
+        }
+        assert not condition.evaluate(unit, observations)
+
+    def test_does_not_fire_for_food_in_own_base(self) -> None:
+        unit = make_unit(Team.RED, Pos(5, 5))
+        condition = FoodInRangeCondition(distance=3)
+        # Food in red base nearby
+        observations: dict[Pos, list[CellContents]] = {
+            Pos(6, 5): [FoodPresent(count=1), BasePresent(Team.RED)]  # Distance 1, in own base
+        }
+        assert not condition.evaluate(unit, observations)
+
+    def test_fires_for_food_in_enemy_base(self) -> None:
+        unit = make_unit(Team.RED, Pos(5, 5))
+        condition = FoodInRangeCondition(distance=3)
+        # Food in blue (enemy) base nearby
+        observations: dict[Pos, list[CellContents]] = {
+            Pos(6, 5): [FoodPresent(count=1), BasePresent(Team.BLUE)]  # Distance 1, in enemy base
+        }
+        assert condition.evaluate(unit, observations)
 
 
 class TestPositionReachedCondition:
