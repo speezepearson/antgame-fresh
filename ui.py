@@ -516,7 +516,6 @@ class AntGameWindow(arcade.Window):
     def on_draw(self) -> None:
         """Render the game."""
         self.clear()
-        arcade.start_render()
 
         # Draw game views
         draw_player_view(
