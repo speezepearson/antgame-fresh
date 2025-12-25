@@ -200,6 +200,8 @@ class PlayerView:
     freeze_frame: Timestamp | None = None
     selected_unit_id: UnitId | None = None
     working_plan: Plan | None = None
+    last_click_time: int = 0
+    last_click_pos: Pos | None = None
 
 
 @dataclass
@@ -1475,8 +1477,37 @@ def handle_events(ctx: GameContext) -> bool:
                 )
                 # Only allow interaction when viewing live (not a freeze frame)
                 if grid_pos is not None and view.freeze_frame is None:
-                    if view.selected_unit_id is not None:
-                        # Append Move order to working plan
+                    # Detect double-click (within 300ms at same position)
+                    current_time = pygame.time.get_ticks()
+                    is_double_click = (
+                        view.last_click_pos == grid_pos
+                        and current_time - view.last_click_time < 300
+                    )
+
+                    # Update last click tracking
+                    view.last_click_time = current_time
+                    view.last_click_pos = grid_pos
+
+                    if is_double_click and view.selected_unit_id is not None:
+                        # Double-click while unit is selected: issue the working plan
+                        if (
+                            view.working_plan is not None
+                            and view.working_plan.orders
+                        ):
+                            ctx.client.set_unit_plan(
+                                team, view.selected_unit_id, view.working_plan
+                            )
+                            view.selected_unit_id = None
+                            view.working_plan = None
+                            # Clean up plan controls
+                            if view.plan_controls is not None:
+                                view.plan_controls.text_box.kill()
+                                view.plan_controls.issue_plan_btn.kill()  # type: ignore[no-untyped-call]
+                                view.plan_controls.clear_plan_btn.kill()  # type: ignore[no-untyped-call]
+                                view.plan_controls.selection_label.hide()  # type: ignore[no-untyped-call]
+                                view.plan_controls = None
+                    elif view.selected_unit_id is not None:
+                        # Single click with unit selected: append Move order to working plan
                         if view.working_plan is None:
                             view.working_plan = Plan(
                                 interrupts=get_default_plan_interrupts(view.knowledge.interrupt_library)

@@ -14,11 +14,13 @@ from mechanics import (
     Order,
     Interrupt,
     EnemyInRangeCondition,
+    IdleCondition,
     BaseVisibleCondition,
     PositionReachedCondition,
     FoodInRangeCondition,
     MoveThereAction,
     MoveHomeAction,
+    ResumeAction,
     Empty,
     UnitPresent,
     BasePresent,
@@ -115,6 +117,8 @@ def deserialize_order(data: Dict[str, Any]) -> Order:
 def serialize_condition(condition: Any) -> Dict[str, Any]:
     if isinstance(condition, EnemyInRangeCondition):
         return {"type": "EnemyInRangeCondition", "distance": condition.distance}
+    elif isinstance(condition, IdleCondition):
+        return {"type": "IdleCondition"}
     elif isinstance(condition, BaseVisibleCondition):
         return {"type": "BaseVisibleCondition"}
     elif isinstance(condition, PositionReachedCondition):
@@ -131,6 +135,8 @@ def serialize_condition(condition: Any) -> Dict[str, Any]:
 def deserialize_condition(data: Dict[str, Any]) -> Any:
     if data["type"] == "EnemyInRangeCondition":
         return EnemyInRangeCondition(distance=data["distance"])
+    elif data["type"] == "IdleCondition":
+        return IdleCondition()
     elif data["type"] == "BaseVisibleCondition":
         return BaseVisibleCondition()
     elif data["type"] == "PositionReachedCondition":
@@ -149,6 +155,8 @@ def serialize_action(action: Any) -> Dict[str, Any]:
         return {"type": "MoveThereAction"}
     elif isinstance(action, MoveHomeAction):
         return {"type": "MoveHomeAction"}
+    elif isinstance(action, ResumeAction):
+        return {"type": "ResumeAction"}
     else:
         raise ValueError(f"Unknown action type: {type(action)}")
 
@@ -158,6 +166,8 @@ def deserialize_action(data: Dict[str, Any]) -> Any:
         return MoveThereAction()
     elif data["type"] == "MoveHomeAction":
         return MoveHomeAction()
+    elif data["type"] == "ResumeAction":
+        return ResumeAction()
     else:
         raise ValueError(f"Unknown action type: {data['type']}")
 
