@@ -65,6 +65,11 @@ class PlanControls:
     issue_plan_btn: arcade.gui.UIFlatButton
     clear_plan_btn: arcade.gui.UIFlatButton
     selection_label: arcade.gui.UILabel
+    fight_checkbox: arcade.gui.UIFlatButton
+    flee_checkbox: arcade.gui.UIFlatButton
+    forage_checkbox: arcade.gui.UIFlatButton
+    come_back_checkbox: arcade.gui.UIFlatButton
+    checkbox_states: dict[str, bool] = field(default_factory=dict)
 
 
 @dataclass
@@ -497,6 +502,29 @@ def make_default_interrupts() -> list[Interrupt[Any]]:
     ]
 
 
+def make_interrupts_from_checkboxes(
+    fight: bool, flee: bool, forage: bool, come_back: bool
+) -> list[Interrupt[Any]]:
+    """Build list of interrupts based on checkbox states."""
+    interrupts: list[Interrupt[Any]] = []
+    if fight:
+        interrupts.append(attack_nearby_enemy_interrupt)
+    if flee:
+        interrupts.append(flee_enemy_interrupt)
+    if forage:
+        interrupts.append(get_food_interrupt)
+    if come_back:
+        interrupts.append(go_home_when_done_interrupt)
+    return interrupts
+
+
+def make_initial_working_plan_interrupts() -> list[Interrupt[Any]]:
+    """Make the initial interrupts for a working plan (matches default checkbox states)."""
+    return make_interrupts_from_checkboxes(
+        fight=True, flee=True, forage=True, come_back=True
+    )
+
+
 class AntGameWindow(arcade.Window):
     """Main window for the Ant RTS game."""
 
@@ -677,15 +705,101 @@ class AntGameWindow(arcade.Window):
                         font_size=10,
                     )
 
-                    # Store button positions for click detection
-                    if view.plan_controls is None or view.plan_controls.last_plan_text != plan_text:
+                    # Initialize or update plan controls
+                    if view.plan_controls is None:
+                        # First time creating plan controls - initialize with all checkboxes checked
                         view.plan_controls = PlanControls(
                             text_area=None,  # type: ignore
                             last_plan_text=plan_text,
                             issue_plan_btn=None,  # type: ignore
                             clear_plan_btn=None,  # type: ignore
                             selection_label=None,  # type: ignore
+                            fight_checkbox=None,  # type: ignore
+                            flee_checkbox=None,  # type: ignore
+                            forage_checkbox=None,  # type: ignore
+                            come_back_checkbox=None,  # type: ignore
+                            checkbox_states={"fight": True, "flee": True, "forage": True, "come_back": True},
                         )
+                    else:
+                        # Update plan text while preserving checkbox states
+                        view.plan_controls.last_plan_text = plan_text
+
+                    # Draw interrupt checkboxes
+                    checkbox_y = btn_y - 25
+                    checkbox_width = 80
+                    checkbox_spacing = 90
+
+                    # Fight checkbox
+                    fight_checked = view.plan_controls.checkbox_states.get("fight", True)
+                    fight_color = (60, 100, 60) if fight_checked else (60, 60, 60)
+                    arcade.draw_lbwh_rectangle_filled(
+                        plan_offset_x,
+                        checkbox_y,
+                        checkbox_width,
+                        20,
+                        fight_color,
+                    )
+                    arcade.draw_text(
+                        f"{"☑" if fight_checked else "☐"} fight",
+                        plan_offset_x + 5,
+                        checkbox_y + 5,
+                        arcade.color.WHITE,
+                        font_size=10,
+                    )
+
+                    # Flee checkbox
+                    flee_checked = view.plan_controls.checkbox_states.get("flee", True)
+                    flee_color = (60, 100, 60) if flee_checked else (60, 60, 60)
+                    arcade.draw_lbwh_rectangle_filled(
+                        plan_offset_x + checkbox_spacing,
+                        checkbox_y,
+                        checkbox_width,
+                        20,
+                        flee_color,
+                    )
+                    arcade.draw_text(
+                        f"{"☑" if flee_checked else "☐"} flee",
+                        plan_offset_x + checkbox_spacing + 5,
+                        checkbox_y + 5,
+                        arcade.color.WHITE,
+                        font_size=10,
+                    )
+
+                    # Forage checkbox
+                    forage_checked = view.plan_controls.checkbox_states.get("forage", True)
+                    forage_color = (60, 100, 60) if forage_checked else (60, 60, 60)
+                    arcade.draw_lbwh_rectangle_filled(
+                        plan_offset_x + checkbox_spacing * 2,
+                        checkbox_y,
+                        checkbox_width,
+                        20,
+                        forage_color,
+                    )
+                    arcade.draw_text(
+                        f"{"☑" if forage_checked else "☐"} forage",
+                        plan_offset_x + checkbox_spacing * 2 + 5,
+                        checkbox_y + 5,
+                        arcade.color.WHITE,
+                        font_size=10,
+                    )
+
+                    # Come back checkbox
+                    come_back_checked = view.plan_controls.checkbox_states.get("come_back", True)
+                    come_back_color = (60, 100, 60) if come_back_checked else (60, 60, 60)
+                    arcade.draw_lbwh_rectangle_filled(
+                        plan_offset_x + checkbox_spacing * 3,
+                        checkbox_y,
+                        checkbox_width,
+                        20,
+                        come_back_color,
+                    )
+                    arcade.draw_text(
+                        f"{"☑" if come_back_checked else "☐"} come back",
+                        plan_offset_x + checkbox_spacing * 3 + 5,
+                        checkbox_y + 5,
+                        arcade.color.WHITE,
+                        font_size=10,
+                    )
 
             else:
                 # No selected unit for this team, clean up plan controls if they exist
@@ -758,7 +872,77 @@ class AntGameWindow(arcade.Window):
                 if (plan_offset_x + 90 <= x <= plan_offset_x + 150 and
                     btn_y <= y <= btn_y + 20):
                     # Clear button clicked
-                    view.working_plan = Plan(interrupts=make_default_interrupts())
+                    view.working_plan = Plan(interrupts=make_initial_working_plan_interrupts())
+                    # Reset checkboxes to default states (all checked)
+                    if view.plan_controls:
+                        view.plan_controls.checkbox_states = {
+                            "fight": True, "flee": True, "forage": True, "come_back": True
+                        }
+                    return
+
+                # Check checkbox clicks (80x20 each, positioned below buttons)
+                checkbox_y = btn_y - 25
+                checkbox_width = 80
+                checkbox_spacing = 90
+
+                # Fight checkbox
+                if (plan_offset_x <= x <= plan_offset_x + checkbox_width and
+                    checkbox_y <= y <= checkbox_y + 20):
+                    if view.plan_controls and view.working_plan:
+                        current = view.plan_controls.checkbox_states.get("fight", True)
+                        view.plan_controls.checkbox_states["fight"] = not current
+                        # Update working plan interrupts
+                        view.working_plan.interrupts = make_interrupts_from_checkboxes(
+                            fight=view.plan_controls.checkbox_states["fight"],
+                            flee=view.plan_controls.checkbox_states["flee"],
+                            forage=view.plan_controls.checkbox_states["forage"],
+                            come_back=view.plan_controls.checkbox_states["come_back"],
+                        )
+                    return
+
+                # Flee checkbox
+                if (plan_offset_x + checkbox_spacing <= x <= plan_offset_x + checkbox_spacing + checkbox_width and
+                    checkbox_y <= y <= checkbox_y + 20):
+                    if view.plan_controls and view.working_plan:
+                        current = view.plan_controls.checkbox_states.get("flee", True)
+                        view.plan_controls.checkbox_states["flee"] = not current
+                        # Update working plan interrupts
+                        view.working_plan.interrupts = make_interrupts_from_checkboxes(
+                            fight=view.plan_controls.checkbox_states["fight"],
+                            flee=view.plan_controls.checkbox_states["flee"],
+                            forage=view.plan_controls.checkbox_states["forage"],
+                            come_back=view.plan_controls.checkbox_states["come_back"],
+                        )
+                    return
+
+                # Forage checkbox
+                if (plan_offset_x + checkbox_spacing * 2 <= x <= plan_offset_x + checkbox_spacing * 2 + checkbox_width and
+                    checkbox_y <= y <= checkbox_y + 20):
+                    if view.plan_controls and view.working_plan:
+                        current = view.plan_controls.checkbox_states.get("forage", True)
+                        view.plan_controls.checkbox_states["forage"] = not current
+                        # Update working plan interrupts
+                        view.working_plan.interrupts = make_interrupts_from_checkboxes(
+                            fight=view.plan_controls.checkbox_states["fight"],
+                            flee=view.plan_controls.checkbox_states["flee"],
+                            forage=view.plan_controls.checkbox_states["forage"],
+                            come_back=view.plan_controls.checkbox_states["come_back"],
+                        )
+                    return
+
+                # Come back checkbox
+                if (plan_offset_x + checkbox_spacing * 3 <= x <= plan_offset_x + checkbox_spacing * 3 + checkbox_width and
+                    checkbox_y <= y <= checkbox_y + 20):
+                    if view.plan_controls and view.working_plan:
+                        current = view.plan_controls.checkbox_states.get("come_back", True)
+                        view.plan_controls.checkbox_states["come_back"] = not current
+                        # Update working plan interrupts
+                        view.working_plan.interrupts = make_interrupts_from_checkboxes(
+                            fight=view.plan_controls.checkbox_states["fight"],
+                            flee=view.plan_controls.checkbox_states["flee"],
+                            forage=view.plan_controls.checkbox_states["forage"],
+                            come_back=view.plan_controls.checkbox_states["come_back"],
+                        )
                     return
 
         for team in Team:
@@ -805,7 +989,7 @@ class AntGameWindow(arcade.Window):
                     # Single click with unit selected: append Move order to working plan
                     if view.working_plan is None:
                         view.working_plan = Plan(
-                            interrupts=make_default_interrupts()
+                            interrupts=make_initial_working_plan_interrupts()
                         )
                     view.working_plan.orders.append(Move(target=grid_pos))
                 else:
@@ -815,7 +999,7 @@ class AntGameWindow(arcade.Window):
                         view.selected_unit_id = unit.id
                         # Initialize working plan when selecting a unit
                         view.working_plan = Plan(
-                            interrupts=make_default_interrupts()
+                            interrupts=make_initial_working_plan_interrupts()
                         )
 
 
