@@ -6,7 +6,6 @@ import random
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Callable
 
 import numpy
 
@@ -26,20 +25,10 @@ class GameLifecycle:
     grid_width: int
     grid_height: int
     available_teams: list[Team]
-    seconds_per_tick: float
     state: GameState | None = None  # Only available in local/server mode
 
-    _local_client: LocalClient | None = field(default=None, repr=False)
     _running: bool = field(default=False, repr=False)
     _thread: threading.Thread | None = field(default=None, repr=False)
-
-    def start(self) -> None:
-        """Start the background game loop."""
-        if self._running:
-            return
-        self._running = True
-        self._thread = threading.Thread(target=self._loop, daemon=True)
-        self._thread.start()
 
     def stop(self) -> None:
         """Stop the background game loop."""
@@ -47,36 +36,6 @@ class GameLifecycle:
         if self._thread is not None:
             self._thread.join(timeout=1.0)
             self._thread = None
-
-    def _loop(self) -> None:
-        """Background loop for ticking (local/server) or fetching (client)."""
-        if self._local_client is not None:
-            self._local_tick_loop()
-        elif isinstance(self.client, RemoteClient):
-            self._remote_fetch_loop()
-
-    def _local_tick_loop(self) -> None:
-        """Tick the game periodically (local/server mode)."""
-        assert self._local_client is not None
-        while self._running:
-            self._local_client.flush_queued_actions()
-            self._local_client.tick_game()
-            time.sleep(self.seconds_per_tick)
-
-    def _remote_fetch_loop(self) -> None:
-        """Fetch knowledge periodically (client mode)."""
-        assert isinstance(self.client, RemoteClient)
-        remote_client = self.client
-        team = remote_client.team
-        while self._running:
-            try:
-                new_knowledge = remote_client.get_player_knowledge(
-                    team, remote_client.get_current_tick() + 1
-                )
-                self.knowledge[team] = new_knowledge
-            except Exception as e:
-                print(f"Error fetching knowledge: {e}")
-                time.sleep(0.5)
 
 
 def run_local_game(
@@ -116,11 +75,19 @@ def run_local_game(
         grid_width=grid_width,
         grid_height=grid_height,
         available_teams=list(Team),
-        seconds_per_tick=seconds_per_tick,
         state=state,
-        _local_client=local_client,
     )
-    lifecycle.start()
+
+    def tick_loop() -> None:
+        while lifecycle._running:
+            local_client.flush_queued_actions()
+            local_client.tick_game()
+            time.sleep(seconds_per_tick)
+
+    lifecycle._running = True
+    lifecycle._thread = threading.Thread(target=tick_loop, daemon=True)
+    lifecycle._thread.start()
+
     return lifecycle
 
 
@@ -169,18 +136,25 @@ def run_server_game(
         grid_width=grid_width,
         grid_height=grid_height,
         available_teams=list(Team),
-        seconds_per_tick=seconds_per_tick,
         state=state,
-        _local_client=local_client,
     )
-    lifecycle.start()
+
+    def tick_loop() -> None:
+        while lifecycle._running:
+            local_client.flush_queued_actions()
+            local_client.tick_game()
+            time.sleep(seconds_per_tick)
+
+    lifecycle._running = True
+    lifecycle._thread = threading.Thread(target=tick_loop, daemon=True)
+    lifecycle._thread.start()
+
     return lifecycle
 
 
 def run_client_game(
     url: str,
     team: Team,
-    seconds_per_tick: float,
 ) -> GameLifecycle:
     """Connect to a remote game server."""
     remote_client = RemoteClient(url=url, team=team)
@@ -210,10 +184,24 @@ def run_client_game(
         grid_width=grid_width,
         grid_height=grid_height,
         available_teams=[team],
-        seconds_per_tick=seconds_per_tick,
         state=None,
     )
-    lifecycle.start()
+
+    def fetch_loop() -> None:
+        while lifecycle._running:
+            try:
+                new_knowledge = remote_client.get_player_knowledge(
+                    team, remote_client.get_current_tick() + 1
+                )
+                lifecycle.knowledge[team] = new_knowledge
+            except Exception as e:
+                print(f"Error fetching knowledge: {e}")
+                time.sleep(0.5)
+
+    lifecycle._running = True
+    lifecycle._thread = threading.Thread(target=fetch_loop, daemon=True)
+    lifecycle._thread.start()
+
     return lifecycle
 
 
@@ -295,7 +283,6 @@ def create_lifecycle_from_args(args: argparse.Namespace) -> GameLifecycle:
         return run_client_game(
             url=args.url,
             team=Team[args.team],
-            seconds_per_tick=seconds_per_tick,
         )
     else:
         food_config = FoodConfig(
