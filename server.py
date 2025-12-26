@@ -38,6 +38,7 @@ class GameServer:
         """Create and configure the aiohttp application."""
         app = web.Application()
         app.router.add_get("/knowledge/{team_name}", self._get_knowledge)
+        app.router.add_get("/food_count/{team_name}", self._get_food_count)
         app.router.add_post("/act/{team_name}/{unit_id}", self._set_unit_plan)
 
         if self.ready_event is not None:
@@ -95,6 +96,19 @@ class GameServer:
                 "base_region": serialize_region(self.state.base_regions[team]),
             }
         )
+
+    async def _get_food_count(self, request: web.Request) -> web.Response:
+        """Get the food count in a team's base."""
+        team_name = request.match_info["team_name"]
+        try:
+            team = Team[team_name]
+        except KeyError:
+            return web.json_response(
+                {"error": f"Invalid team: {team_name}"}, status=400
+            )
+
+        count = self.state.get_food_count_in_base(team)
+        return web.json_response({"count": count})
 
     async def _set_unit_plan(self, request: web.Request) -> web.Response:
         """Set a unit's plan.
