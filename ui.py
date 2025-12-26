@@ -3,28 +3,23 @@
 from __future__ import annotations
 from dataclasses import dataclass, field
 import random
+import time
 from typing import Any
-import argparse
-import numpy
 import arcade
 import arcade.gui
-import time
 
 from core import Pos, Region, Timestamp
 from knowledge import PlayerKnowledge
 from client import GameClient, LocalClient, RemoteClient
+from game_lifecycle import GameLifecycle, parse_args, create_lifecycle_from_args
 from mechanics import (
     CreateUnitPlayerAction,
     Empty,
-    FoodConfig,
     FoodPresent,
     GameState,
-    PlayerAction,
     Team,
     BasePresent,
     UnitPresent,
-    GRID_SIZE,
-    make_game,
     Unit,
     UnitId,
     UnitType,
@@ -89,9 +84,7 @@ class PlayerView:
 class GameContext:
     """Container for all game state and UI elements."""
 
-    client: GameClient
-    grid_width: int
-    grid_height: int
+    lifecycle: GameLifecycle
     views: dict[Team, PlayerView]
     team_offsets: dict[Team, int]
     red_offset_x: int
@@ -100,10 +93,20 @@ class GameContext:
     views_offset_y: int
     slider_y: int
     map_pixel_size: int
-    seconds_per_tick: float
-    last_tick_at_sec: float
-    start_time: float  # For get_ticks replacement
+    start_time: float = 0.0  # For elapsed time calculation
     ui_manager: arcade.gui.UIManager | None = None
+
+    @property
+    def client(self) -> GameClient:
+        return self.lifecycle.client
+
+    @property
+    def grid_width(self) -> int:
+        return self.lifecycle.grid_width
+
+    @property
+    def grid_height(self) -> int:
+        return self.lifecycle.grid_height
 
 
 def format_plan(plan: Plan, unit: Unit) -> list[str]:
@@ -733,7 +736,7 @@ class AntGameWindow(arcade.Window):
             self.height,
         )
         draw_god_view(
-            self.game_ctx.client.get_god_view(),
+            self.game_ctx.lifecycle.state,
             self.game_ctx.god_offset_x,
             self.game_ctx.views_offset_y,
             self.game_ctx.grid_width,
@@ -925,23 +928,10 @@ class AntGameWindow(arcade.Window):
             update_interrupts_from_checkboxes()
 
     def on_update(self, delta_time: float) -> None:
-        """Update game state."""
-        # Tick game if appropriate (only in local/server mode)
-        if isinstance(self.game_ctx.client, LocalClient):
-            current_elapsed_sec = self.get_elapsed_secs()
-            if current_elapsed_sec - self.game_ctx.last_tick_at_sec >= self.game_ctx.seconds_per_tick:
-                self.game_ctx.client.flush_queued_actions()
-                self.game_ctx.client.tick_game()
-                self.game_ctx.last_tick_at_sec = current_elapsed_sec
-        elif isinstance(self.game_ctx.client, RemoteClient):
-            current_elapsed_sec = self.get_elapsed_secs()
-            if current_elapsed_sec - self.game_ctx.last_tick_at_sec >= self.game_ctx.seconds_per_tick:
-                self.game_ctx.views[self.game_ctx.client.team].knowledge = self.game_ctx.client.get_player_knowledge(
-                    self.game_ctx.client.team, self.game_ctx.client.get_current_tick() + 1
-                )
-                self.game_ctx.last_tick_at_sec = current_elapsed_sec
-        else:
-            raise ValueError(f"Unknown client type: {type(self.game_ctx.client)}")
+        """Update UI state (game ticking happens in background thread)."""
+        # Sync view knowledge from lifecycle (background thread may have updated it)
+        for team in self.game_ctx.lifecycle.available_teams:
+            self.game_ctx.views[team].knowledge = self.game_ctx.lifecycle.knowledge[team]
 
         # Update UI manager
         if self.game_ctx.ui_manager:
@@ -1028,101 +1018,16 @@ class AntGameWindow(arcade.Window):
                             break
 
 
-def initialize_game() -> tuple[GameContext, AntGameWindow]:
-    """Parse arguments and initialize game state and UI elements."""
-    # Parse command-line arguments
-    parser = argparse.ArgumentParser(description="Ant RTS Game")
-    parser.add_argument(
-        "--width", type=int, default=GRID_SIZE, help="Width of the grid (default: 32)"
-    )
-    parser.add_argument(
-        "--height", type=int, default=GRID_SIZE, help="Height of the grid (default: 32)"
-    )
-    parser.add_argument(
-        "--food-scale",
-        type=float,
-        default=10.0,
-        help="Perlin noise scale for food generation (default: 10.0)",
-    )
-    parser.add_argument(
-        "--food-max-prob",
-        type=float,
-        default=0.1,
-        help="Maximum probability of food in a cell (default: 0.1)",
-    )
-    parser.add_argument(
-        "--seed",
-        type=int,
-        default=None,
-        help="Random seed for food generation (default: random)",
-    )
-    parser.add_argument(
-        "--mode",
-        type=str,
-        choices=["local", "server", "client"],
-        default="local",
-        help="Game mode: local (default), server, or client",
-    )
-    parser.add_argument(
-        "--port",
-        type=int,
-        default=5000,
-        help="Port for server mode (default: 5000)",
-    )
-    parser.add_argument(
-        "--url",
-        type=str,
-        help="Server URL for client mode (e.g., http://localhost:5000)",
-    )
-    parser.add_argument(
-        "--team",
-        type=str,
-        choices=["RED", "BLUE"],
-        help="Team to play as in client mode",
-    )
-    args = parser.parse_args()
-
-    # Validate arguments based on mode
-    if args.mode == "client":
-        if not args.url:
-            parser.error("--url is required for client mode")
-        if not args.team:
-            parser.error("--team is required for client mode")
-
-    if args.seed is not None:
-        random.seed(args.seed)
-        numpy.random.seed(args.seed)
+def create_window_from_lifecycle(lifecycle: GameLifecycle) -> tuple[GameContext, AntGameWindow]:
+    """Create UI window and context from a GameLifecycle."""
+    grid_width = lifecycle.grid_width
+    grid_height = lifecycle.grid_height
 
     # Layout: RED view (with slider) | GOD view | BLUE view (with slider)
     padding = 10
     label_height = 25
     slider_height = 30
     plan_area_height = 240  # Space for plan display and buttons below player maps
-
-    # Create the game state and client based on mode
-    if args.mode == "client":
-        # Client mode: create RemoteClient first, get dimensions from it
-        client_team = Team[args.team]
-        from client import RemoteClient
-
-        temp_client = RemoteClient(url=args.url, team=client_team)
-        # Fetch initial knowledge to get grid dimensions
-        initial_knowledge = temp_client.get_player_knowledge(client_team, Timestamp(0))
-        grid_width = initial_knowledge.grid_width
-        grid_height = initial_knowledge.grid_height
-        state = None  # No local state in client mode
-    else:
-        # Local or server mode: create GameState
-        food_config = FoodConfig(
-            scale=args.food_scale,
-            max_prob=args.food_max_prob,
-        )
-        state = make_game(
-            make_mind=PlanningMind,
-            grid_width=args.width, grid_height=args.height, food_config=food_config
-        )
-        grid_width = state.grid_width
-        grid_height = state.grid_height
 
     map_pixel_size = grid_width * TILE_SIZE
 
@@ -1144,89 +1049,14 @@ def initialize_game() -> tuple[GameContext, AntGameWindow]:
         Team.BLUE: blue_offset_x,
     }
 
-    seconds_per_tick = 1/5
-    last_tick = 0.0
-
-    # Create views and client based on mode
-    client: GameClient
-    if args.mode == "client":
-        # Client mode: only create view for the client's team
-        # Reuse the temp_client we created earlier
-        client = temp_client
-        client_team = Team[args.team]
-
-        # Create a placeholder knowledge that will be updated by fetches
-        if client_team == Team.RED:
-            red_view = PlayerView(
-                knowledge=initial_knowledge,
-            )
-            # Create a dummy blue view (won't be visible)
-            blue_view = PlayerView(
-                knowledge=PlayerKnowledge(
-                    team=Team.BLUE,
-                    grid_width=grid_width,
-                    grid_height=grid_height,
-                    tick=Timestamp(0),
-                ),
-            )
-        else:
-            # Create a dummy red view (won't be visible)
-            red_view = PlayerView(
-                knowledge=PlayerKnowledge(
-                    team=Team.RED,
-                    grid_width=grid_width,
-                    grid_height=grid_height,
-                    tick=Timestamp(0),
-                ),
-            )
-            blue_view = PlayerView(
-                knowledge=initial_knowledge,
-            )
-    else:
-        # Local or server mode: create views for both teams
-        assert state is not None, "State should not be None in local/server mode"
-
-        red_view = PlayerView(
-            knowledge=PlayerKnowledge(
-                team=Team.RED,
-                grid_width=grid_width,
-                grid_height=grid_height,
-                tick=state.now,
-            ),
-        )
-        blue_view = PlayerView(
-            knowledge=PlayerKnowledge(
-                team=Team.BLUE,
-                grid_width=grid_width,
-                grid_height=grid_height,
-                tick=state.now,
-            ),
-        )
-
-        # Create LocalClient
-        knowledge_dict = {
-            Team.RED: red_view.knowledge,
-            Team.BLUE: blue_view.knowledge,
-        }
-        client = LocalClient(state=state, knowledge=knowledge_dict)
-
-        # Start server if in server mode
-        if args.mode == "server":
-            from server import GameServer
-
-            server = GameServer(state, knowledge_dict, port=args.port)
-            server.start()
-            print(f"Server started on port {args.port}")
-
+    # Create views from lifecycle knowledge
     views = {
-        Team.RED: red_view,
-        Team.BLUE: blue_view,
+        team: PlayerView(knowledge=lifecycle.knowledge[team])
+        for team in Team
     }
 
     ctx = GameContext(
-        client=client,
-        grid_width=grid_width,
-        grid_height=grid_height,
+        lifecycle=lifecycle,
         views=views,
         team_offsets=team_offsets,
         red_offset_x=red_offset_x,
@@ -1235,9 +1065,6 @@ def initialize_game() -> tuple[GameContext, AntGameWindow]:
         views_offset_y=views_offset_y,
         slider_y=slider_y,
         map_pixel_size=map_pixel_size,
-        seconds_per_tick=seconds_per_tick,
-        last_tick_at_sec=last_tick,
-        start_time=0.0,  # Will be set by window
     )
 
     # Create window first (required for UIManager and widgets)
@@ -1343,8 +1170,10 @@ def initialize_game() -> tuple[GameContext, AntGameWindow]:
 
 
 def main() -> None:
-    """Main game loop: initialize, then run the arcade window."""
-    ctx, window = initialize_game()
+    """Main entry point: parse args, create lifecycle, and run UI."""
+    args = parse_args()
+    lifecycle = create_lifecycle_from_args(args)
+    ctx, window = create_window_from_lifecycle(lifecycle)
     arcade.run()
 
 
