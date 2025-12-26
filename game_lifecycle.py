@@ -5,7 +5,7 @@ import argparse
 import random
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import numpy
 
@@ -18,7 +18,7 @@ from planning import PlanningMind
 
 @dataclass
 class GameLifecycle:
-    """Manages game state and background ticking/fetching."""
+    """Manages game state and references for UI."""
 
     client: GameClient
     knowledge: dict[Team, PlayerKnowledge]
@@ -26,16 +26,6 @@ class GameLifecycle:
     grid_height: int
     available_teams: list[Team]
     state: GameState | None = None  # Only available in local/server mode
-
-    _running: bool = field(default=False, repr=False)
-    _thread: threading.Thread | None = field(default=None, repr=False)
-
-    def stop(self) -> None:
-        """Stop the background game loop."""
-        self._running = False
-        if self._thread is not None:
-            self._thread.join(timeout=1.0)
-            self._thread = None
 
 
 def run_local_game(
@@ -79,14 +69,12 @@ def run_local_game(
     )
 
     def tick_loop() -> None:
-        while lifecycle._running:
+        while True:
             local_client.flush_queued_actions()
             local_client.tick_game()
             time.sleep(seconds_per_tick)
 
-    lifecycle._running = True
-    lifecycle._thread = threading.Thread(target=tick_loop, daemon=True)
-    lifecycle._thread.start()
+    threading.Thread(target=tick_loop, daemon=True).start()
 
     return lifecycle
 
@@ -140,14 +128,12 @@ def run_server_game(
     )
 
     def tick_loop() -> None:
-        while lifecycle._running:
+        while True:
             local_client.flush_queued_actions()
             local_client.tick_game()
             time.sleep(seconds_per_tick)
 
-    lifecycle._running = True
-    lifecycle._thread = threading.Thread(target=tick_loop, daemon=True)
-    lifecycle._thread.start()
+    threading.Thread(target=tick_loop, daemon=True).start()
 
     return lifecycle
 
@@ -188,7 +174,7 @@ def run_client_game(
     )
 
     def fetch_loop() -> None:
-        while lifecycle._running:
+        while True:
             try:
                 new_knowledge = remote_client.get_player_knowledge(
                     team, remote_client.get_current_tick() + 1
@@ -198,9 +184,7 @@ def run_client_game(
                 print(f"Error fetching knowledge: {e}")
                 time.sleep(0.5)
 
-    lifecycle._running = True
-    lifecycle._thread = threading.Thread(target=fetch_loop, daemon=True)
-    lifecycle._thread.start()
+    threading.Thread(target=fetch_loop, daemon=True).start()
 
     return lifecycle
 
