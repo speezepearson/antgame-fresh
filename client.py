@@ -193,44 +193,16 @@ class RemoteClient(GameClient):
 
         return self._current_knowledge
 
-    def set_unit_plan(self, team: Team, unit_id: UnitId, plan: Plan) -> None:
-        if team != self.team:
-            raise ValueError(f"Can only control own team ({self.team}) in remote mode")
-
-        from serialization import serialize_plan
-
-        try:
-            response = requests.post(
-                f"{self.url}/act/{team.name}/{unit_id}",
-                json=serialize_plan(plan),
-                timeout=5,
-            )
-            response.raise_for_status()
-        except Exception as e:
-            print(f"Error setting unit plan: {e}")
-            raise
-
     def add_player_action(self, team: Team, action: PlayerAction) -> None:
         if team != self.team:
             raise ValueError(f"Can only control own team ({self.team}) in remote mode")
-        # TODO: Implement remote player action support
-        raise NotImplementedError("Remote player actions not yet implemented")
 
-    def spawn_unit(self, team: Team, unit_type: UnitType) -> bool:
-        if team != self.team:
-            raise ValueError(f"Can only control own team ({self.team}) in remote mode")
-
-        try:
-            response = requests.post(
-                f"{self.url}/spawn/{team.name}",
-                json={"unit_type": unit_type.value},
-                timeout=5,
-            )
-            response.raise_for_status()
-            return bool(response.json().get("success", False))
-        except Exception as e:
-            print(f"Error spawning unit: {e}")
-            raise
+        response = requests.post(
+            f"{self.url}/act/{team.name}",
+            json=serialize_player_action(action),
+            timeout=5,
+        )
+        response.raise_for_status()
 
     def get_food_count_in_base(self, team: Team) -> int:
         if team != self.team:

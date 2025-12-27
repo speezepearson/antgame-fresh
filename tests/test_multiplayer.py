@@ -10,10 +10,12 @@ from aiohttp.test_utils import TestClient, TestServer
 from core import Pos, Region, Timestamp
 from logbook import Logbook
 from mechanics import (
+    CreateUnitPlayerAction,
     Team,
     Unit,
     UnitId,
     GameState,
+    UnitType,
     make_game,
     Empty,
     UnitPresent,
@@ -465,16 +467,14 @@ class TestRemoteClient:
         with pytest.raises(ValueError, match="Can only view own team"):
             client.get_player_knowledge(Team.BLUE, tick=state.now)
 
-    def test_rejects_plan_for_other_team(self, running_server: RunningServerFixture) -> None:
-        """Test RemoteClient cannot set plans for other team."""
+    def test_rejects_action_for_other_team(self, running_server: RunningServerFixture) -> None:
+        """Test RemoteClient cannot act for other team."""
         server, state, knowledge, port, local_client = running_server
 
         client = RemoteClient(url=f"http://localhost:{port}", team=Team.RED)
 
-        new_plan = Plan(orders=[Move(target=Pos(12, 12))])
-
         with pytest.raises(ValueError, match="Can only control own team"):
-            client.set_unit_plan(Team.BLUE, UnitId(1), new_plan)
+            client.add_player_action(Team.BLUE, CreateUnitPlayerAction(mind=PlanningMind(), unit_type=UnitType.FIGHTER))
 
     def test_gets_base_region_for_own_team(self, running_server: RunningServerFixture) -> None:
         """Test RemoteClient can get base region."""
