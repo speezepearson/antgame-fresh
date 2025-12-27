@@ -16,6 +16,8 @@ from mechanics import (
     BasePresent,
     FoodPresent,
     CellContents,
+    PlayerAction,
+    CreateUnitPlayerAction,
 )
 from planning import (
     Plan,
@@ -31,6 +33,7 @@ from planning import (
     MoveHomeAction,
     ResumeAction,
     PlanningMind,
+    SetUnitPlanPlayerAction,
 )
 from logbook import Logbook, ObservationLog
 from knowledge import PlayerKnowledge, ExpectedTrajectory
@@ -297,3 +300,38 @@ def deserialize_logbook(data: Dict[str, Any]) -> Logbook:
             for pos_str, contents_list in observations.items()
         })
     return result
+
+
+# ===== PlayerAction =====
+
+
+def serialize_player_action(action: PlayerAction) -> Dict[str, Any]:
+    if isinstance(action, CreateUnitPlayerAction):
+        return {
+            "type": "CreateUnitPlayerAction",
+            "mind": serialize_mind(action.mind),
+            "unit_type": serialize_unit_type(action.unit_type),
+        }
+    elif isinstance(action, SetUnitPlanPlayerAction):
+        return {
+            "type": "SetUnitPlanPlayerAction",
+            "unit_id": int(action.unit_id),
+            "plan": serialize_plan(action.plan),
+        }
+    else:
+        raise ValueError(f"Unknown player action type: {type(action)}")
+
+
+def deserialize_player_action(data: Dict[str, Any]) -> PlayerAction:
+    if data["type"] == "CreateUnitPlayerAction":
+        return CreateUnitPlayerAction(
+            mind=deserialize_mind(data["mind"]),
+            unit_type=deserialize_unit_type(data["unit_type"]),
+        )
+    elif data["type"] == "SetUnitPlanPlayerAction":
+        return SetUnitPlanPlayerAction(
+            unit_id=UnitId(data["unit_id"]),
+            plan=deserialize_plan(data["plan"]),
+        )
+    else:
+        raise ValueError(f"Unknown player action type: {data['type']}")

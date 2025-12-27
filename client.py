@@ -12,6 +12,7 @@ from core import Pos, Region, Timestamp
 from knowledge import PlayerKnowledge
 from mechanics import GameState, PlayerAction, Team, UnitId, UnitType, Unit
 from planning import Plan, PlanningMind
+from serialization import serialize_player_action
 
 if TYPE_CHECKING:
     from server import ObservationStore
