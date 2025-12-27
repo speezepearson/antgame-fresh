@@ -13,7 +13,6 @@ from mechanics import Team, UnitId, Unit, GameState
 from planning import PlanningMind
 from knowledge import PlayerKnowledge
 from serialization import (
-    serialize_player_knowledge,
     serialize_region,
     serialize_unit,
     deserialize_plan,
@@ -148,6 +147,8 @@ class GameServer:
                     str(tick): [serialize_unit(u) for u in units]
                     for tick, units in observations.items()
                 }
+
+                print(f'serialized observations for {set(serialized_observations.keys())}: {serialized_observations}')
 
                 # Discard old observations now that the client has caught up
                 self.observation_store.discard_up_to(team, after)

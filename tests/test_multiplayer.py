@@ -8,6 +8,7 @@ from typing import Any, AsyncIterator, Generator, Iterator, cast
 from aiohttp.test_utils import TestClient, TestServer
 
 from core import Pos, Region, Timestamp
+from logbook import Logbook
 from mechanics import (
     Team,
     Unit,
@@ -33,6 +34,10 @@ from planning import (
 )
 from knowledge import PlayerKnowledge, ExpectedTrajectory
 from serialization import (
+    deserialize_logbook,
+    deserialize_mind,
+    serialize_logbook,
+    serialize_mind,
     serialize_pos,
     deserialize_pos,
     serialize_region,
@@ -53,12 +58,6 @@ from serialization import (
     deserialize_plan,
     serialize_unit,
     deserialize_unit,
-    serialize_observation_log,
-    deserialize_observation_log,
-    serialize_expected_trajectory,
-    deserialize_expected_trajectory,
-    serialize_player_knowledge,
-    deserialize_player_knowledge,
 )
 from client import LocalClient, RemoteClient, GameClient
 from server import GameServer, ObservationStore
@@ -210,73 +209,22 @@ class TestSerialization:
         mind = cast(PlanningMind, deserialized.mind)
         assert len(mind.plan.orders) == 1
 
-    def test_observation_log_roundtrips(self):
-        """Test observation log serialization."""
-        log = {
-            Timestamp(0): {
-                Pos(0, 0): [Empty()],
-                Pos(1, 1): [UnitPresent(team=Team.RED, unit_id=UnitId(1))],
-            },
-            Timestamp(5): {
-                Pos(2, 2): [FoodPresent(count=3)],
-            },
-        }
-        data = serialize_observation_log(log)  # type: ignore[arg-type]
-        deserialized = deserialize_observation_log(data)
-        assert Timestamp(0) in deserialized
-        assert Timestamp(5) in deserialized
-        assert Pos(0, 0) in deserialized[Timestamp(0)]
-        assert Pos(2, 2) in deserialized[Timestamp(5)]
+    def test_planning_mind_roundtrips(self):
+        """Test mind serialization."""
+        mind = PlanningMind(logbook=Logbook(), plan=Plan(orders=[Move(target=Pos(10, 10))]))
+        data = serialize_mind(mind)
+        deserialized = deserialize_mind(data)
+        assert deserialized == mind
 
-    def test_expected_trajectory_roundtrips(self):
-        """Test expected trajectory serialization."""
-        trajectory: ExpectedTrajectory = {
-            Timestamp(0): Pos(0, 0),
-            Timestamp(1): Pos(1, 1),
-            Timestamp(2): Pos(2, 2),
-        }
-        data = serialize_expected_trajectory(trajectory)
-        deserialized = deserialize_expected_trajectory(data)
-        assert deserialized == trajectory
-
-    def test_player_knowledge_roundtrips(self):
+    def test_logbook_roundtrips(self):
         """Test player knowledge serialization."""
-        knowledge = PlayerKnowledge(
-            team=Team.RED,
-            grid_width=32,
-            grid_height=32,
-            tick=Timestamp(5),
-        )
-        # Add observations to the logbook
-        knowledge.logbook.observation_log = {
-            Timestamp(0): {Pos(0, 0): [Empty()]},
-        }
-        knowledge.last_in_base = {
-            UnitId(1): (
-                Timestamp(3),
-                make_unit(Team.RED, Pos(5, 5)),
-            )
-        }
-        knowledge.expected_trajectories = {
-            UnitId(2): {
-                Timestamp(2): Pos(3, 3),
-                Timestamp(3): Pos(4, 4),
-            }
-        }
-        knowledge.own_units_in_base = {
-            UnitId(1): make_unit(Team.RED, Pos(5, 5)),
-        }
-
-        data = serialize_player_knowledge(knowledge)
-        deserialized = deserialize_player_knowledge(data)
-
-        assert deserialized.team == knowledge.team
-        assert deserialized.grid_width == knowledge.grid_width
-        assert deserialized.grid_height == knowledge.grid_height
-        assert deserialized.tick == knowledge.tick
-        assert Timestamp(0) in deserialized.logbook.observation_log
-        assert UnitId(1) in deserialized.last_in_base
-        assert UnitId(2) in deserialized.expected_trajectories
+        logbook = Logbook()
+        logbook.add_latest_observations(Timestamp(0), {Pos(0, 0): [Empty()]})
+        logbook.add_latest_observations(Timestamp(1), {Pos(1, 1): [UnitPresent(team=Team.RED, unit_id=UnitId(1))]})
+        logbook.add_latest_observations(Timestamp(2), {Pos(2, 2): [FoodPresent(count=3)]})
+        data = serialize_logbook(logbook)
+        deserialized = deserialize_logbook(data)
+        assert deserialized == logbook
 
 
 # ===== LocalClient Tests =====
