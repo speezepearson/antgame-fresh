@@ -1,4 +1,4 @@
-"""Arcade rendering and UI."""
+"""Arcade rendering and UI using Sections for modular layout."""
 
 from __future__ import annotations
 from dataclasses import dataclass, field
@@ -7,6 +7,7 @@ import time
 from typing import Any
 import arcade
 import arcade.gui
+from arcade import Section, SectionManager
 
 from core import Pos, Region, Timestamp
 from knowledge import PlayerKnowledge
@@ -29,6 +30,7 @@ from planning import EnemyInRangeCondition, FoodInRangeCondition, IdleCondition,
 
 # Rendering Constants
 TILE_SIZE = 16
+PADDING = 10
 
 # Checkbox textures for UITextureToggle
 TEX_CHECKBOX_CHECKED = arcade.load_texture(":resources:gui_basic_assets/checkbox/blue_check.png")
@@ -56,7 +58,7 @@ class DispositionControls:
 class PlanControls:
     """UI controls for plan editing."""
 
-    container: arcade.gui.UIAnchorLayout
+    container: arcade.gui.UIWidget
     text_area: arcade.gui.UITextArea
     issue_plan_btn: arcade.gui.UIFlatButton
     clear_plan_btn: arcade.gui.UIFlatButton
@@ -68,11 +70,9 @@ class PlanControls:
 
 
 @dataclass
-class PlayerView:
+class PlayerViewState:
+    """Mutable state for a player's view."""
     knowledge: PlayerKnowledge
-    tick_controls: TickControls | None = None
-    disposition_controls: DispositionControls | None = None
-    plan_controls: PlanControls | None = None
     freeze_frame: Timestamp | None = None
     selected_unit_id: UnitId | None = None
     working_plan: Plan | None = None
@@ -80,436 +80,7 @@ class PlayerView:
     last_click_pos: Pos | None = None
 
 
-@dataclass
-class GameContext:
-    """Container for all game state and UI elements."""
-
-    lifecycle: GameLifecycle
-    views: dict[Team, PlayerView]
-    team_offsets: dict[Team, int]
-    red_offset_x: int
-    god_offset_x: int
-    blue_offset_x: int
-    views_offset_y: int
-    slider_y: int
-    map_pixel_size: int
-    start_time: float = 0.0  # For elapsed time calculation
-    ui_manager: arcade.gui.UIManager | None = None
-
-    @property
-    def client(self) -> GameClient:
-        return self.lifecycle.client
-
-    @property
-    def grid_width(self) -> int:
-        return self.lifecycle.grid_width
-
-    @property
-    def grid_height(self) -> int:
-        return self.lifecycle.grid_height
-
-
-def format_plan(plan: Plan, unit: Unit) -> list[str]:
-    """Format a plan as a list of strings for display."""
-    lines = []
-
-    # Show current and remaining orders
-    if plan.orders:
-        lines.append("Orders:")
-        for i, order in enumerate(plan.orders):
-            prefix = "> " if i == 0 else "  "
-            lines.append(f"{prefix}{order.description}")
-    else:
-        lines.append("Orders: (none)")
-
-    # Show interrupts
-    if plan.interrupts:
-        lines.append("Interrupts:")
-        for interrupt in plan.interrupts:
-            condition_desc = interrupt.condition.description
-            lines.append(
-                f"  If {condition_desc}: {'; '.join([action.description for action in interrupt.actions])}"
-            )
-
-    return lines
-
-
-def draw_grid(
-    offset_x: int,
-    offset_y: int,
-    grid_width: int,
-    grid_height: int,
-    window_height: int,
-) -> None:
-    map_pixel_width = grid_width * TILE_SIZE
-    map_pixel_height = grid_height * TILE_SIZE
-    for x in range(grid_width + 1):
-        x_pos = offset_x + x * TILE_SIZE
-        y_start = window_height - offset_y
-        y_end = window_height - (offset_y + map_pixel_height)
-        arcade.draw_line(x_pos, y_start, x_pos, y_end, (50, 50, 50))
-    for y in range(grid_height + 1):
-        y_pos = window_height - (offset_y + y * TILE_SIZE)
-        x_start = offset_x
-        x_end = offset_x + map_pixel_width
-        arcade.draw_line(x_start, y_pos, x_end, y_pos, (50, 50, 50))
-
-
-def draw_base_cell(
-    pos: Pos,
-    team: Team,
-    offset_x: int,
-    offset_y: int,
-    window_height: int,
-    outline_only: bool = False,
-) -> None:
-    """Draw a base region with a faint background tint."""
-    # Faint background color for base cells
-    tint_color = (80, 40, 40) if team == Team.RED else (40, 40, 200)
-    left = offset_x + pos.x * TILE_SIZE
-    bottom = window_height - (offset_y + pos.y * TILE_SIZE + TILE_SIZE)
-    arcade.draw_lbwh_rectangle_filled(left, bottom, TILE_SIZE, TILE_SIZE, tint_color)
-
-
-def draw_unit_at(
-    team: Team,
-    pos: Pos,
-    offset_x: int,
-    offset_y: int,
-    window_height: int,
-    selected: bool = False,
-    outline_only: bool = False,
-    unit_type: UnitType = UnitType.FIGHTER,
-) -> None:
-    color = (255, 100, 100) if team == Team.RED else (100, 100, 255)
-    center_x = offset_x + pos.x * TILE_SIZE + TILE_SIZE // 2
-    center_y = window_height - (offset_y + pos.y * TILE_SIZE + TILE_SIZE // 2)
-
-    if unit_type == UnitType.SCOUT:
-        # Draw square for scouts
-        size = TILE_SIZE // 3
-        left = center_x - size
-        bottom = center_y - size
-        width = size * 2
-        height = size * 2
-
-        if outline_only:
-            arcade.draw_lbwh_rectangle_outline(left, bottom, width, height, color, 1)
-        else:
-            arcade.draw_lbwh_rectangle_filled(left, bottom, width, height, color)
-        if selected:
-            arcade.draw_lbwh_rectangle_outline(left - 3, bottom - 3, width + 6, height + 6, (255, 255, 0), 2)
-    else:
-        # Draw circle for fighters
-        radius = TILE_SIZE // 3
-        if outline_only:
-            arcade.draw_circle_outline(center_x, center_y, radius, color, 1)
-        else:
-            arcade.draw_circle_filled(center_x, center_y, radius, color)
-        if selected:
-            arcade.draw_circle_outline(center_x, center_y, radius + 3, (255, 255, 0), 2)
-
-
-def draw_food(
-    food: dict[Pos, int],
-    offset_x: int,
-    offset_y: int,
-    window_height: int,
-    outline_only: bool = False,
-) -> None:
-    """Draw food as small green dots, with multiple items positioned non-overlapping."""
-    radius = 3
-
-    for pos, count in food.items():
-        tile_x = offset_x + pos.x * TILE_SIZE
-        tile_y = window_height - (offset_y + pos.y * TILE_SIZE + TILE_SIZE)
-
-        if count == 1:
-            # Single item: center of tile
-            positions = [(TILE_SIZE // 2, TILE_SIZE // 2)]
-        elif count == 2:
-            # Two items: left and right
-            positions = [
-                (TILE_SIZE // 3, TILE_SIZE // 2),
-                (2 * TILE_SIZE // 3, TILE_SIZE // 2),
-            ]
-        elif count == 3:
-            # Three items: triangle pattern
-            positions = [
-                (TILE_SIZE // 2, TILE_SIZE // 3),  # top center
-                (TILE_SIZE // 3, 2 * TILE_SIZE // 3),  # bottom left
-                (2 * TILE_SIZE // 3, 2 * TILE_SIZE // 3),  # bottom right
-            ]
-        elif count == 4:
-            # Four items: corners
-            positions = [
-                (TILE_SIZE // 3, TILE_SIZE // 3),
-                (2 * TILE_SIZE // 3, TILE_SIZE // 3),
-                (TILE_SIZE // 3, 2 * TILE_SIZE // 3),
-                (2 * TILE_SIZE // 3, 2 * TILE_SIZE // 3),
-            ]
-        else:
-            # Five or more: 2x2 grid plus center
-            positions = [
-                (TILE_SIZE // 3, TILE_SIZE // 3),
-                (2 * TILE_SIZE // 3, TILE_SIZE // 3),
-                (TILE_SIZE // 3, 2 * TILE_SIZE // 3),
-                (2 * TILE_SIZE // 3, 2 * TILE_SIZE // 3),
-                (TILE_SIZE // 2, TILE_SIZE // 2),
-            ][: min(count, 5)]
-
-        for dx, dy in positions:
-            if outline_only:
-                arcade.draw_circle_outline(
-                    tile_x + dx, tile_y + dy, radius, (100, 255, 100), 1
-                )
-            else:
-                arcade.draw_circle_filled(
-                    tile_x + dx, tile_y + dy, radius, (100, 255, 100)
-                )
-
-
-def draw_god_view(
-    state: GameState | None,
-    offset_x: int,
-    offset_y: int,
-    grid_width: int,
-    grid_height: int,
-    window_height: int,
-) -> None:
-    """Draw the god's-eye view showing the complete game state.
-
-    If state is None (client mode), draws a placeholder message instead.
-    """
-    map_pixel_width = grid_width * TILE_SIZE
-    map_pixel_height = grid_height * TILE_SIZE
-    left = offset_x
-    bottom = window_height - (offset_y + map_pixel_height)
-    arcade.draw_lbwh_rectangle_filled(
-        left, bottom, map_pixel_width, map_pixel_height, (30, 30, 30)
-    )
-
-    if state is None:
-        # Client mode - no god view available
-        # Draw a message indicating god view is not available
-        text_x = offset_x + map_pixel_width // 2
-        text_y = window_height - (offset_y + map_pixel_height // 2)
-        arcade.draw_text(
-            "God view not available in client mode",
-            text_x,
-            text_y,
-            (100, 100, 100),
-            font_size=12,
-            anchor_x="center",
-            anchor_y="center",
-        )
-        return
-
-    # Draw grid
-    draw_grid(offset_x, offset_y, state.grid_width, state.grid_height, window_height)
-
-    # Draw base regions
-    for pos in state.get_base_region(Team.RED).cells:
-        draw_base_cell(pos, Team.RED, offset_x, offset_y, window_height)
-    for pos in state.get_base_region(Team.BLUE).cells:
-        draw_base_cell(pos, Team.BLUE, offset_x, offset_y, window_height)
-
-    # Draw food
-    draw_food(state.food, offset_x, offset_y, window_height)
-
-    # Draw units
-    for unit in state.units.values():
-        draw_unit_at(
-            unit.team,
-            unit.pos,
-            offset_x,
-            offset_y,
-            window_height,
-            unit_type=unit.unit_type,
-        )
-
-
-CELL_BRIGHTNESS_HALFLIFE = 100
-
-
-def draw_player_view(
-    view: PlayerView,
-    team: Team,
-    offset_x: int,
-    offset_y: int,
-    window_height: int,
-) -> None:
-    """Draw a player's view of the map at their selected tick."""
-    freeze_frame = view.freeze_frame
-    # Use current tick when live (freeze_frame is None), otherwise use freeze_frame
-    view_t = view.knowledge.tick if freeze_frame is None else freeze_frame
-    logbook = view.knowledge.logbook.observation_log
-
-    map_pixel_width = view.knowledge.grid_width * TILE_SIZE
-    map_pixel_height = view.knowledge.grid_height * TILE_SIZE
-    left = offset_x
-    bottom = window_height - (offset_y + map_pixel_height)
-    arcade.draw_lbwh_rectangle_filled(
-        left, bottom, map_pixel_width, map_pixel_height, (0, 0, 0)
-    )
-
-    # Get observations for this timestamp
-    cur_observations = logbook.get(view_t, {})
-
-    # Draw cells with gradient tinting based on observation age
-    for pos, (last_observed_tick, _) in view.knowledge.logbook.last_observations_by_pos.items():
-        age = view_t - last_observed_tick
-        # Exponential decay: 80 * 2^-(age/50)
-        brightness = int(80 * (2 ** (-(age / CELL_BRIGHTNESS_HALFLIFE))))
-        brightness = max(0, min(80, brightness))  # Clamp to [0, 80]
-
-        cell_left = offset_x + pos.x * TILE_SIZE
-        cell_bottom = window_height - (offset_y + pos.y * TILE_SIZE + TILE_SIZE)
-        arcade.draw_lbwh_rectangle_filled(
-            cell_left,
-            cell_bottom,
-            TILE_SIZE,
-            TILE_SIZE,
-            (brightness, brightness, brightness),
-        )
-
-    # Redraw grid on top
-    draw_grid(
-        offset_x,
-        offset_y,
-        view.knowledge.grid_width,
-        view.knowledge.grid_height,
-        window_height,
-    )
-
-    if freeze_frame is None:
-        for pos, (t, contents_list) in view.knowledge.logbook.last_observations_by_pos.items():
-            if freeze_frame is not None and t != view.knowledge.tick:
-                continue
-            for contents in sorted(
-                contents_list,
-                key=lambda x: (isinstance(x, UnitPresent), isinstance(x, FoodPresent)),
-            ):
-                if isinstance(contents, BasePresent):
-                    draw_base_cell(
-                        pos,
-                        contents.team,
-                        offset_x,
-                        offset_y,
-                        window_height,
-                    )
-                elif isinstance(contents, UnitPresent):
-                    if pos not in cur_observations and contents.team == team:
-                        # we should be showing the expected trajectory for our own units
-                        continue
-                    draw_unit_at(
-                        contents.team,
-                        pos,
-                        offset_x,
-                        offset_y,
-                        window_height,
-                        outline_only=pos not in cur_observations,
-                        unit_type=contents.unit_type,
-                    )
-                elif isinstance(contents, FoodPresent):
-                    draw_food(
-                        {pos: contents.count},
-                        offset_x,
-                        offset_y,
-                        window_height,
-                        outline_only=pos not in cur_observations,
-                    )
-
-    else:
-        for pos, contents_list in view.knowledge.logbook.observation_log.get(
-            freeze_frame, {}
-        ).items():
-            for contents in sorted(
-                contents_list,
-                key=lambda x: (isinstance(x, UnitPresent), isinstance(x, FoodPresent)),
-            ):
-                if isinstance(contents, BasePresent):
-                    draw_base_cell(
-                        pos,
-                        contents.team,
-                        offset_x,
-                        offset_y,
-                        window_height,
-                    )
-                elif isinstance(contents, UnitPresent):
-                    draw_unit_at(
-                        contents.team,
-                        pos,
-                        offset_x,
-                        offset_y,
-                        window_height,
-                        outline_only=False,
-                        unit_type=contents.unit_type,
-                    )
-                elif isinstance(contents, FoodPresent):
-                    draw_food(
-                        {pos: contents.count},
-                        offset_x,
-                        offset_y,
-                        window_height,
-                        outline_only=False,
-                    )
-
-    # Draw predicted positions for units with expected trajectories
-    for unit_id, trajectory in view.knowledge.expected_trajectories.items():
-        predicted_pos = trajectory.get(view_t)
-        if predicted_pos is None:
-            continue
-        unit_type = view.knowledge.last_in_base[unit_id][1].unit_type
-        draw_unit_at(
-            team, predicted_pos, offset_x, offset_y, window_height, outline_only=True, unit_type=unit_type
-        )
-
-
-def screen_to_grid(
-    mouse_x: int,
-    mouse_y: int,
-    offset_x: int,
-    offset_y: int,
-    grid_width: int,
-    grid_height: int,
-    window_height: int,
-) -> Pos | None:
-    # Convert from Arcade coordinates (bottom-left origin) to grid coordinates
-    pygame_y = window_height - mouse_y
-    rel_x = mouse_x - offset_x
-    rel_y = pygame_y - offset_y
-
-    map_pixel_width = grid_width * TILE_SIZE
-    map_pixel_height = grid_height * TILE_SIZE
-    if 0 <= rel_x < map_pixel_width and 0 <= rel_y < map_pixel_height:
-        return Pos(rel_x // TILE_SIZE, rel_y // TILE_SIZE)
-    return None
-
-
-def find_unit_at_base(client: GameClient, pos: Pos, team: Team) -> UnitPresent | None:
-    """Find a unit of the given team at pos, only if inside their base region."""
-    if pos not in client.get_base_region(team).cells:
-        return None
-
-    now = client.get_current_tick()
-    knowledge = client.get_player_knowledge(team, now)
-
-    last_info = knowledge.logbook.last_observations_by_pos.get(pos)
-    print('last_info:', last_info, 'at', now)
-    if last_info is None:
-        return None
-    last_observed_t, last_observed_contents = last_info
-    if last_observed_t < now - 2:
-        return None
-    for contents in last_observed_contents:
-        if isinstance(contents, UnitPresent) and contents.team == team:
-            print('got one')
-            return contents
-
-    return None
-
-
+# Interrupt definitions
 attack_nearby_enemy_interrupt = Interrupt(
     condition=EnemyInRangeCondition(distance=2),
     actions=[MoveThereAction()],
@@ -526,14 +97,6 @@ go_home_when_done_interrupt = Interrupt(
     condition=IdleCondition(),
     actions=[MoveHomeAction()],
 )
-
-
-def make_default_interrupts() -> list[Interrupt[Any]]:
-    return [
-        attack_nearby_enemy_interrupt if random.random() < 0.5 else flee_enemy_interrupt,
-        get_food_interrupt,
-        go_home_when_done_interrupt,
-    ]
 
 
 def make_interrupts_from_checkboxes(
@@ -553,627 +116,724 @@ def make_interrupts_from_checkboxes(
 
 
 def make_initial_working_plan_interrupts(unit_type: UnitType) -> list[Interrupt[Any]]:
-    """Make the initial interrupts for a working plan based on unit type.
-
-    Fighters get: fight, forage, come home
-    Scouts get: flee, forage, come home
-    """
+    """Make the initial interrupts for a working plan based on unit type."""
     if unit_type == UnitType.SCOUT:
         return make_interrupts_from_checkboxes(
             fight=False, flee=True, forage=True, come_back=True
         )
-    else:  # FIGHTER
+    else:
         return make_interrupts_from_checkboxes(
             fight=True, flee=False, forage=True, come_back=True
         )
 
 
-def create_plan_controls(
-    team: Team,
-    unit_type: UnitType,
-    offset_x: int,
-    arcade_plan_y: int,
-    plan_box_width: int,
-    plan_box_height: int,
-) -> PlanControls:
-    """Create the plan control widgets for a selected unit."""
-    # Default checkbox states based on unit type
-    if unit_type == UnitType.SCOUT:
-        fight_default, flee_default = False, True
+def format_plan(plan: Plan, unit: Unit) -> list[str]:
+    """Format a plan as a list of strings for display."""
+    lines = []
+    if plan.orders:
+        lines.append("Orders:")
+        for i, order in enumerate(plan.orders):
+            prefix = "> " if i == 0 else "  "
+            lines.append(f"{prefix}{order.description}")
     else:
-        fight_default, flee_default = True, False
+        lines.append("Orders: (none)")
 
-    # Create main container
-    container = arcade.gui.UIAnchorLayout()
-
-    # Vertical layout for all plan controls
-    main_box = arcade.gui.UIBoxLayout(vertical=True, space_between=5)
-
-    # Selection label
-    team_name = team.value
-    selection_label = arcade.gui.UILabel(
-        text=f"Selected: {team_name} unit - click {team_name}'s map to add waypoints",
-        font_size=10,
-        text_color=arcade.color.WHITE,
-    )
-    main_box.add(selection_label)
-
-    # Plan text area with border
-    text_area = arcade.gui.UITextArea(
-        text="Orders: (none)\nInterrupts:",
-        width=plan_box_width,
-        height=plan_box_height,
-        font_size=10,
-        text_color=arcade.color.WHITE,
-    )
-    text_area.with_background(color=arcade.types.Color(40, 40, 40, 255))
-    text_area.with_border(color=arcade.color.WHITE, width=2)
-    text_area.with_padding(all=5)
-    main_box.add(text_area)
-
-    # Button row
-    button_row = arcade.gui.UIBoxLayout(vertical=False, space_between=10)
-    issue_plan_btn = arcade.gui.UIFlatButton(
-        text="Issue Plan",
-        width=80,
-        height=25,
-        style=arcade.gui.UIFlatButton.STYLE_BLUE,
-    )
-    clear_plan_btn = arcade.gui.UIFlatButton(
-        text="Clear",
-        width=60,
-        height=25,
-        style=arcade.gui.UIFlatButton.STYLE_RED,
-    )
-    button_row.add(issue_plan_btn)
-    button_row.add(clear_plan_btn)
-    main_box.add(button_row)
-
-    # Checkbox row
-    checkbox_row = arcade.gui.UIBoxLayout(vertical=False, space_between=5)
-
-    # Fight checkbox with label
-    fight_box = arcade.gui.UIBoxLayout(vertical=False, space_between=3)
-    fight_checkbox = arcade.gui.UITextureToggle(
-        on_texture=TEX_CHECKBOX_CHECKED,
-        off_texture=TEX_CHECKBOX_UNCHECKED,
-        width=20,
-        height=20,
-        value=fight_default,
-    )
-    fight_box.add(fight_checkbox)
-    fight_box.add(arcade.gui.UILabel(text="fight", font_size=10, text_color=arcade.color.WHITE))
-    checkbox_row.add(fight_box)
-
-    # Flee checkbox with label
-    flee_box = arcade.gui.UIBoxLayout(vertical=False, space_between=3)
-    flee_checkbox = arcade.gui.UITextureToggle(
-        on_texture=TEX_CHECKBOX_CHECKED,
-        off_texture=TEX_CHECKBOX_UNCHECKED,
-        width=20,
-        height=20,
-        value=flee_default,
-    )
-    flee_box.add(flee_checkbox)
-    flee_box.add(arcade.gui.UILabel(text="flee", font_size=10, text_color=arcade.color.WHITE))
-    checkbox_row.add(flee_box)
-
-    # Forage checkbox with label
-    forage_box = arcade.gui.UIBoxLayout(vertical=False, space_between=3)
-    forage_checkbox = arcade.gui.UITextureToggle(
-        on_texture=TEX_CHECKBOX_CHECKED,
-        off_texture=TEX_CHECKBOX_UNCHECKED,
-        width=20,
-        height=20,
-        value=True,
-    )
-    forage_box.add(forage_checkbox)
-    forage_box.add(arcade.gui.UILabel(text="forage", font_size=10, text_color=arcade.color.WHITE))
-    checkbox_row.add(forage_box)
-
-    # Come back checkbox with label
-    come_back_box = arcade.gui.UIBoxLayout(vertical=False, space_between=3)
-    come_back_checkbox = arcade.gui.UITextureToggle(
-        on_texture=TEX_CHECKBOX_CHECKED,
-        off_texture=TEX_CHECKBOX_UNCHECKED,
-        width=20,
-        height=20,
-        value=True,
-    )
-    come_back_box.add(come_back_checkbox)
-    come_back_box.add(arcade.gui.UILabel(text="come back", font_size=10, text_color=arcade.color.WHITE))
-    checkbox_row.add(come_back_box)
-
-    main_box.add(checkbox_row)
-
-    # Position the main box
-    container.add(
-        main_box,
-        anchor_x="left",
-        anchor_y="bottom",
-        align_x=offset_x,
-        align_y=arcade_plan_y,
-    )
-
-    return PlanControls(
-        container=container,
-        text_area=text_area,
-        issue_plan_btn=issue_plan_btn,
-        clear_plan_btn=clear_plan_btn,
-        selection_label=selection_label,
-        fight_checkbox=fight_checkbox,
-        flee_checkbox=flee_checkbox,
-        forage_checkbox=forage_checkbox,
-        come_back_checkbox=come_back_checkbox,
-    )
+    if plan.interrupts:
+        lines.append("Interrupts:")
+        for interrupt in plan.interrupts:
+            condition_desc = interrupt.condition.description
+            lines.append(
+                f"  If {condition_desc}: {'; '.join([action.description for action in interrupt.actions])}"
+            )
+    return lines
 
 
-class AntGameWindow(arcade.Window):
-    """Main window for the Ant RTS game."""
+# Drawing helpers (operate relative to section coordinates)
+CELL_BRIGHTNESS_HALFLIFE = 100
 
-    def __init__(self, ctx: GameContext, window_width: int, window_height: int):
-        super().__init__(window_width, window_height, "Ant RTS")
-        self.game_ctx = ctx
-        self.start_at = time.time()
-        self.game_ctx.start_time = self.start_at
 
-        # Set update rate to 60 FPS
-        self.set_update_rate(1/60)
+def draw_grid(width: int, height: int, grid_width: int, grid_height: int) -> None:
+    """Draw grid lines within section (0,0 at bottom-left)."""
+    for x in range(grid_width + 1):
+        x_pos = x * TILE_SIZE
+        arcade.draw_line(x_pos, 0, x_pos, height, (50, 50, 50))
+    for y in range(grid_height + 1):
+        y_pos = y * TILE_SIZE
+        arcade.draw_line(0, y_pos, width, y_pos, (50, 50, 50))
 
-    def get_elapsed_secs(self) -> float:
-        return (time.time() - self.start_at)
+
+def draw_base_cell(pos: Pos, team: Team, map_height: int) -> None:
+    """Draw a base region cell."""
+    tint_color = (80, 40, 40) if team == Team.RED else (40, 40, 200)
+    left = pos.x * TILE_SIZE
+    bottom = map_height - (pos.y + 1) * TILE_SIZE
+    arcade.draw_lbwh_rectangle_filled(left, bottom, TILE_SIZE, TILE_SIZE, tint_color)
+
+
+def draw_unit_at(
+    team: Team,
+    pos: Pos,
+    map_height: int,
+    selected: bool = False,
+    outline_only: bool = False,
+    unit_type: UnitType = UnitType.FIGHTER,
+) -> None:
+    """Draw a unit at grid position."""
+    color = (255, 100, 100) if team == Team.RED else (100, 100, 255)
+    center_x = pos.x * TILE_SIZE + TILE_SIZE // 2
+    center_y = map_height - (pos.y * TILE_SIZE + TILE_SIZE // 2)
+
+    if unit_type == UnitType.SCOUT:
+        size = TILE_SIZE // 3
+        left = center_x - size
+        bottom = center_y - size
+        width = size * 2
+        height = size * 2
+        if outline_only:
+            arcade.draw_lbwh_rectangle_outline(left, bottom, width, height, color, 1)
+        else:
+            arcade.draw_lbwh_rectangle_filled(left, bottom, width, height, color)
+        if selected:
+            arcade.draw_lbwh_rectangle_outline(left - 3, bottom - 3, width + 6, height + 6, (255, 255, 0), 2)
+    else:
+        radius = TILE_SIZE // 3
+        if outline_only:
+            arcade.draw_circle_outline(center_x, center_y, radius, color, 1)
+        else:
+            arcade.draw_circle_filled(center_x, center_y, radius, color)
+        if selected:
+            arcade.draw_circle_outline(center_x, center_y, radius + 3, (255, 255, 0), 2)
+
+
+def draw_food(food: dict[Pos, int], map_height: int, outline_only: bool = False) -> None:
+    """Draw food as small green dots."""
+    radius = 3
+    for pos, count in food.items():
+        tile_x = pos.x * TILE_SIZE
+        tile_y = map_height - (pos.y + 1) * TILE_SIZE
+
+        if count == 1:
+            positions = [(TILE_SIZE // 2, TILE_SIZE // 2)]
+        elif count == 2:
+            positions = [(TILE_SIZE // 3, TILE_SIZE // 2), (2 * TILE_SIZE // 3, TILE_SIZE // 2)]
+        elif count == 3:
+            positions = [
+                (TILE_SIZE // 2, TILE_SIZE // 3),
+                (TILE_SIZE // 3, 2 * TILE_SIZE // 3),
+                (2 * TILE_SIZE // 3, 2 * TILE_SIZE // 3),
+            ]
+        elif count == 4:
+            positions = [
+                (TILE_SIZE // 3, TILE_SIZE // 3),
+                (2 * TILE_SIZE // 3, TILE_SIZE // 3),
+                (TILE_SIZE // 3, 2 * TILE_SIZE // 3),
+                (2 * TILE_SIZE // 3, 2 * TILE_SIZE // 3),
+            ]
+        else:
+            positions = [
+                (TILE_SIZE // 3, TILE_SIZE // 3),
+                (2 * TILE_SIZE // 3, TILE_SIZE // 3),
+                (TILE_SIZE // 3, 2 * TILE_SIZE // 3),
+                (2 * TILE_SIZE // 3, 2 * TILE_SIZE // 3),
+                (TILE_SIZE // 2, TILE_SIZE // 2),
+            ][: min(count, 5)]
+
+        for dx, dy in positions:
+            if outline_only:
+                arcade.draw_circle_outline(tile_x + dx, tile_y + dy, radius, (100, 255, 100), 1)
+            else:
+                arcade.draw_circle_filled(tile_x + dx, tile_y + dy, radius, (100, 255, 100))
+
+
+def screen_to_grid(mouse_x: int, mouse_y: int, grid_width: int, grid_height: int, map_height: int) -> Pos | None:
+    """Convert section-relative coordinates to grid position."""
+    map_pixel_width = grid_width * TILE_SIZE
+    map_pixel_height = grid_height * TILE_SIZE
+    # mouse_y is in arcade coords (0 at bottom), convert to grid coords (0 at top)
+    grid_y = (map_height - mouse_y) // TILE_SIZE
+    grid_x = mouse_x // TILE_SIZE
+    if 0 <= grid_x < grid_width and 0 <= grid_y < grid_height:
+        return Pos(grid_x, grid_y)
+    return None
+
+
+class GodMapSection(Section):
+    """Section displaying the God's-eye view of the entire game state."""
+
+    def __init__(
+        self,
+        left: int,
+        bottom: int,
+        width: int,
+        height: int,
+        lifecycle: GameLifecycle,
+    ):
+        super().__init__(left, bottom, width, height, accept_keyboard_keys=False)
+        self.lifecycle = lifecycle
+        self.map_height = height
+
+    @property
+    def grid_width(self) -> int:
+        return self.lifecycle.grid_width
+
+    @property
+    def grid_height(self) -> int:
+        return self.lifecycle.grid_height
 
     def on_draw(self) -> None:
-        """Render the game."""
-        self.clear()
+        state = self.lifecycle.state
+        map_pixel_width = self.grid_width * TILE_SIZE
+        map_pixel_height = self.grid_height * TILE_SIZE
 
-        # Draw game views
-        draw_player_view(
-            self.game_ctx.views[Team.RED],
-            Team.RED,
-            self.game_ctx.red_offset_x,
-            self.game_ctx.views_offset_y,
-            self.height,
-        )
-        draw_god_view(
-            self.game_ctx.lifecycle.state,
-            self.game_ctx.god_offset_x,
-            self.game_ctx.views_offset_y,
-            self.game_ctx.grid_width,
-            self.game_ctx.grid_height,
-            self.height,
-        )
-        draw_player_view(
-            self.game_ctx.views[Team.BLUE],
-            Team.BLUE,
-            self.game_ctx.blue_offset_x,
-            self.game_ctx.views_offset_y,
-            self.height,
-        )
+        arcade.draw_lbwh_rectangle_filled(0, 0, map_pixel_width, map_pixel_height, (30, 30, 30))
 
-        # Update slider positions and labels to reflect current state
-        current_tick = self.game_ctx.client.get_current_tick()
-        if current_tick > 0:
-            red_view = self.game_ctx.views[Team.RED]
-            if red_view.tick_controls:
-                red_view_tick = red_view.freeze_frame
-                if red_view_tick is None:
-                    red_view.tick_controls.slider.value = 1.0
-                    red_view.tick_controls.tick_label.text = f"t={current_tick}"
-                else:
-                    red_view.tick_controls.slider.value = red_view_tick / current_tick
-                    red_view.tick_controls.tick_label.text = f"t={red_view_tick}"
-
-            blue_view = self.game_ctx.views[Team.BLUE]
-            if blue_view.tick_controls:
-                blue_view_tick = blue_view.freeze_frame
-                if blue_view_tick is None:
-                    blue_view.tick_controls.slider.value = 1.0
-                    blue_view.tick_controls.tick_label.text = f"t={current_tick}"
-                else:
-                    blue_view.tick_controls.slider.value = blue_view_tick / current_tick
-                    blue_view.tick_controls.tick_label.text = f"t={blue_view_tick}"
-
-        # Update spawn button appearance based on food availability
-        for team in self.game_ctx.client.get_available_teams():
-            view = self.game_ctx.views[team]
-            if view.disposition_controls:
-                food_count = self.game_ctx.client.get_food_count_in_base(team)
-                has_food = food_count > 0
-                # Update button text and enabled state
-                view.disposition_controls.fighter_btn.text = f"Fighter ({food_count})"
-                view.disposition_controls.scout_btn.text = f"Scout ({food_count})"
-                # Disable buttons when no food (change style)
-                if has_food:
-                    view.disposition_controls.fighter_btn.disabled = False
-                    view.disposition_controls.scout_btn.disabled = False
-                else:
-                    view.disposition_controls.fighter_btn.disabled = True
-                    view.disposition_controls.scout_btn.disabled = True
-
-        # Handle plan controls for each team
-        for team in Team:
-            view = self.game_ctx.views[team]
-            plan_offset_x = self.game_ctx.team_offsets[team]
-
-            # Plan area layout
-            plan_box_width = self.game_ctx.map_pixel_size
-            plan_box_height = 150
-            # Position below the disposition buttons
-            arcade_plan_y = self.height - self.game_ctx.slider_y - 55 - plan_box_height - 60
-
-            if view.selected_unit_id is not None:
-                # Get the selected unit from player knowledge
-                knowledge = self.game_ctx.client.get_player_knowledge(
-                    team, self.game_ctx.client.get_current_tick()
-                )
-                selected_unit = knowledge.own_units_in_base.get(view.selected_unit_id)
-
-                if selected_unit is None:
-                    # Unit no longer exists in our knowledge, clear selection
-                    view.selected_unit_id = None
-                    view.working_plan = None
-                    if view.plan_controls is not None:
-                        # Remove from UI manager and clean up
-                        if self.game_ctx.ui_manager:
-                            self.game_ctx.ui_manager.remove(view.plan_controls.container)
-                        view.plan_controls = None
-                    continue
-
-                # Create plan controls if they don't exist
-                if view.plan_controls is None and view.working_plan is not None:
-                    view.plan_controls = create_plan_controls(
-                        team=team,
-                        unit_type=selected_unit.unit_type,
-                        offset_x=plan_offset_x,
-                        arcade_plan_y=arcade_plan_y,
-                        plan_box_width=plan_box_width,
-                        plan_box_height=plan_box_height,
-                    )
-                    # Add to UI manager
-                    if self.game_ctx.ui_manager:
-                        self.game_ctx.ui_manager.add(view.plan_controls.container)
-
-                    # Set up event handlers for this team's plan controls
-                    self._setup_plan_control_handlers(team, view)
-
-                # Update plan text in the text area
-                if view.working_plan is not None and view.plan_controls is not None:
-                    plan_lines = format_plan(view.working_plan, selected_unit)
-                    plan_text = "\n".join(plan_lines)
-                    view.plan_controls.text_area.text = plan_text
-
-            else:
-                # No selected unit for this team, clean up plan controls if they exist
-                if view.plan_controls is not None:
-                    if self.game_ctx.ui_manager:
-                        self.game_ctx.ui_manager.remove(view.plan_controls.container)
-                    view.plan_controls = None
-
-        # Draw UI manager
-        if self.game_ctx.ui_manager:
-            self.game_ctx.ui_manager.draw()
-
-    def _setup_plan_control_handlers(self, team: Team, view: PlayerView) -> None:
-        """Set up event handlers for plan control widgets."""
-        if view.plan_controls is None:
-            return
-
-        controls = view.plan_controls
-
-        @controls.issue_plan_btn.event("on_click")
-        def on_issue_plan_click(event: Any) -> None:
-            if view.working_plan and view.working_plan.orders and view.selected_unit_id:
-                self.game_ctx.client.add_player_action(team, SetUnitPlanPlayerAction(
-                    unit_id=view.selected_unit_id,
-                    plan=view.working_plan,
-                ))
-                # Clear selection after issuing plan
-                view.selected_unit_id = None
-                view.working_plan = None
-                if view.plan_controls is not None and self.game_ctx.ui_manager:
-                    self.game_ctx.ui_manager.remove(view.plan_controls.container)
-                view.plan_controls = None
-
-        @controls.clear_plan_btn.event("on_click")
-        def on_clear_plan_click(event: Any) -> None:
-            if view.selected_unit_id:
-                # Get unit type for proper defaults
-                knowledge = self.game_ctx.client.get_player_knowledge(
-                    team, self.game_ctx.client.get_current_tick()
-                )
-                unit_type = UnitType.FIGHTER
-                if view.selected_unit_id in knowledge.last_in_base:
-                    _, selected_unit = knowledge.last_in_base[view.selected_unit_id]
-                    unit_type = selected_unit.unit_type
-
-                # Reset working plan with default interrupts
-                view.working_plan = Plan(interrupts=make_initial_working_plan_interrupts(unit_type))
-
-                # Reset checkbox states to defaults
-                if view.plan_controls:
-                    if unit_type == UnitType.SCOUT:
-                        view.plan_controls.fight_checkbox.value = False
-                        view.plan_controls.flee_checkbox.value = True
-                    else:
-                        view.plan_controls.fight_checkbox.value = True
-                        view.plan_controls.flee_checkbox.value = False
-                    view.plan_controls.forage_checkbox.value = True
-                    view.plan_controls.come_back_checkbox.value = True
-
-        def update_interrupts_from_checkboxes() -> None:
-            """Update working plan interrupts based on checkbox states."""
-            if view.working_plan and view.plan_controls:
-                view.working_plan.interrupts = make_interrupts_from_checkboxes(
-                    fight=view.plan_controls.fight_checkbox.value,
-                    flee=view.plan_controls.flee_checkbox.value,
-                    forage=view.plan_controls.forage_checkbox.value,
-                    come_back=view.plan_controls.come_back_checkbox.value,
-                )
-
-        @controls.fight_checkbox.event("on_change")
-        def on_fight_change(event: Any) -> None:
-            update_interrupts_from_checkboxes()
-
-        @controls.flee_checkbox.event("on_change")
-        def on_flee_change(event: Any) -> None:
-            update_interrupts_from_checkboxes()
-
-        @controls.forage_checkbox.event("on_change")
-        def on_forage_change(event: Any) -> None:
-            update_interrupts_from_checkboxes()
-
-        @controls.come_back_checkbox.event("on_change")
-        def on_come_back_change(event: Any) -> None:
-            update_interrupts_from_checkboxes()
-
-    def on_update(self, delta_time: float) -> None:
-        """Update UI state (game ticking happens in background thread)."""
-        # Sync view knowledge from lifecycle (background thread may have updated it)
-        for team in self.game_ctx.lifecycle.available_teams:
-            self.game_ctx.views[team].knowledge = self.game_ctx.lifecycle.knowledge[team]
-
-        # Update UI manager
-        if self.game_ctx.ui_manager:
-            self.game_ctx.ui_manager.on_update(delta_time)  # type: ignore[no-untyped-call]
-
-    def on_mouse_press(self, x: int, y: int, button: int, modifiers: int) -> None:
-        """Handle mouse clicks."""
-        # Let UI manager handle it first
-        if self.game_ctx.ui_manager and self.game_ctx.ui_manager.on_mouse_press(x, y, button, modifiers):
-            return
-
-        if button != arcade.MOUSE_BUTTON_LEFT:
-            return
-
-        # Plan control button/checkbox clicks are handled by UIManager event handlers
-
-        for team in Team:
-            view = self.game_ctx.views[team]
-
-            # Check each team's player view for unit selection or target
-            grid_pos = screen_to_grid(
-                x,
-                y,
-                self.game_ctx.team_offsets[team],
-                self.game_ctx.views_offset_y,
-                self.game_ctx.grid_width,
-                self.game_ctx.grid_height,
-                self.height,
+        if state is None:
+            text_x = map_pixel_width // 2
+            text_y = map_pixel_height // 2
+            arcade.draw_text(
+                "God view not available in client mode",
+                text_x, text_y, (100, 100, 100),
+                font_size=12, anchor_x="center", anchor_y="center",
             )
-            # Only allow interaction when viewing live (not a freeze frame)
-            if grid_pos is not None and view.freeze_frame is None:
-                # Detect double-click (within 300ms at same position)
-                current_elapsed_millis = self.get_elapsed_secs()
-                is_double_click = (
-                    view.last_click_pos == grid_pos
-                    and current_elapsed_millis - view.last_click_time < 300
-                )
+            return
 
-                # Update last click tracking
-                view.last_click_time = current_elapsed_millis
-                view.last_click_pos = grid_pos
+        draw_grid(map_pixel_width, map_pixel_height, self.grid_width, self.grid_height)
 
-                if is_double_click and view.selected_unit_id is not None:
-                    # Double-click while unit is selected: issue the working plan
-                    if (
-                        view.working_plan is not None
-                        and view.working_plan.orders
-                    ):
-                        self.game_ctx.client.add_player_action(team, SetUnitPlanPlayerAction(
-                            unit_id=view.selected_unit_id,
-                            plan=view.working_plan,
-                        ))
-                        view.selected_unit_id = None
-                        view.working_plan = None
-                        # Clean up plan controls
-                        if view.plan_controls is not None:
-                            view.plan_controls = None
-                elif view.selected_unit_id is not None:
-                    # Single click with unit selected: append Move order to working plan
-                    if view.working_plan is None:
-                        # Look up the selected unit to get its type
-                        knowledge = self.game_ctx.client.get_player_knowledge(
-                            team, self.game_ctx.client.get_current_tick()
-                        )
-                        unit_type = UnitType.FIGHTER  # default
-                        if view.selected_unit_id in knowledge.last_in_base:
-                            _, selected_unit = knowledge.last_in_base[view.selected_unit_id]
-                            unit_type = selected_unit.unit_type
-                        view.working_plan = Plan(
-                            interrupts=make_initial_working_plan_interrupts(unit_type)
-                        )
-                    view.working_plan.orders.append(Move(target=grid_pos))
-                else:
-                    # Try to select a unit
-                    knowledge = self.game_ctx.client.get_player_knowledge(
-                        team, self.game_ctx.client.get_current_tick()
-                    )
-                    for unit_id, unit in knowledge.own_units_in_base.items():
-                        if unit.pos == grid_pos:
-                            view.selected_unit_id = unit_id
-                            view.working_plan = Plan(
-                                interrupts=make_initial_working_plan_interrupts(unit.unit_type)
-                            )
-                            break
+        for pos in state.get_base_region(Team.RED).cells:
+            draw_base_cell(pos, Team.RED, map_pixel_height)
+        for pos in state.get_base_region(Team.BLUE).cells:
+            draw_base_cell(pos, Team.BLUE, map_pixel_height)
+
+        draw_food(state.food, map_pixel_height)
+
+        for unit in state.units.values():
+            draw_unit_at(unit.team, unit.pos, map_pixel_height, unit_type=unit.unit_type)
 
 
-def create_window_from_lifecycle(lifecycle: GameLifecycle) -> tuple[GameContext, AntGameWindow]:
-    """Create UI window and context from a GameLifecycle."""
-    grid_width = lifecycle.grid_width
-    grid_height = lifecycle.grid_height
+class PlayerMapSection(Section):
+    """Section displaying a single player's view of the map with controls."""
 
-    # Layout: RED view (with slider) | GOD view | BLUE view (with slider)
-    padding = 10
-    label_height = 25
-    slider_height = 30
-    plan_area_height = 240  # Space for plan display and buttons below player maps
+    def __init__(
+        self,
+        left: int,
+        bottom: int,
+        width: int,
+        height: int,
+        team: Team,
+        lifecycle: GameLifecycle,
+        view_state: PlayerViewState,
+        ui_manager: arcade.gui.UIManager,
+        start_time_getter: Any,  # callable returning elapsed time
+    ):
+        super().__init__(left, bottom, width, height, accept_keyboard_keys=False)
+        self.team = team
+        self.lifecycle = lifecycle
+        self.view_state = view_state
+        self.ui_manager = ui_manager
+        self.start_time_getter = start_time_getter
 
-    map_pixel_size = grid_width * TILE_SIZE
+        self.map_pixel_size = self.lifecycle.grid_width * TILE_SIZE
+        self.map_height = self.map_pixel_size
 
-    window_width = map_pixel_size * 3 + padding * 4
-    window_height = (
-        map_pixel_size + padding * 2 + label_height + slider_height + plan_area_height
-    )
+        # UI controls
+        self.tick_controls: TickControls | None = None
+        self.disposition_controls: DispositionControls | None = None
+        self.plan_controls: PlanControls | None = None
 
-    red_offset_x = padding
-    god_offset_x = padding * 2 + map_pixel_size
-    blue_offset_x = padding * 3 + map_pixel_size * 2
-    views_offset_y = padding + label_height
-    slider_y = views_offset_y + map_pixel_size + 5
-    slider_width = map_pixel_size - 100
+        self._setup_controls()
 
-    # Map teams to their view offsets
-    team_offsets = {
-        Team.RED: red_offset_x,
-        Team.BLUE: blue_offset_x,
-    }
+    @property
+    def client(self) -> GameClient:
+        return self.lifecycle.client
 
-    # Create views from lifecycle knowledge
-    views = {
-        team: PlayerView(knowledge=lifecycle.knowledge[team])
-        for team in Team
-    }
+    @property
+    def grid_width(self) -> int:
+        return self.lifecycle.grid_width
 
-    ctx = GameContext(
-        lifecycle=lifecycle,
-        views=views,
-        team_offsets=team_offsets,
-        red_offset_x=red_offset_x,
-        god_offset_x=god_offset_x,
-        blue_offset_x=blue_offset_x,
-        views_offset_y=views_offset_y,
-        slider_y=slider_y,
-        map_pixel_size=map_pixel_size,
-    )
+    @property
+    def grid_height(self) -> int:
+        return self.lifecycle.grid_height
 
-    # Create window first (required for UIManager and widgets)
-    window = AntGameWindow(ctx, window_width, window_height)
+    def _setup_controls(self) -> None:
+        """Create tick and disposition controls using UIBoxLayout."""
+        # Main vertical layout for all controls below the map
+        controls_container = arcade.gui.UIBoxLayout(vertical=True, space_between=5)
 
-    # Now create UIManager with the window
-    ui_manager = arcade.gui.UIManager()
-    ctx.ui_manager = ui_manager
-    ui_manager.enable()
-
-    # Now that window exists, create UI widgets for both teams
-    # Convert from pygame top-left coordinates to arcade bottom-left
-    arcade_slider_y = window_height - slider_y - 20
-    disposition_y = slider_y + 25
-    arcade_disposition_y = window_height - disposition_y - 20
-
-    def create_player_ui(team: Team, offset_x: int) -> None:
-        """Create and register all UI controls for a player's team."""
-        view = ctx.views[team]
-
-        # Create tick controls
+        # Tick control row: slider | label | live button
+        slider_width = self.map_pixel_size - 100
         slider = arcade.gui.UISlider(value=0, min_value=0, max_value=1, width=slider_width, height=20)
         tick_label = arcade.gui.UILabel(text="t=0", width=45, height=20)
         live_btn = arcade.gui.UIFlatButton(text="LIVE", width=50, height=20)
 
-        tick_controls = TickControls(
-            slider=slider,
-            tick_label=tick_label,
-            live_btn=live_btn,
-        )
+        tick_row = arcade.gui.UIBoxLayout(vertical=False, space_between=5)
+        tick_row.add(slider)
+        tick_row.add(tick_label)
+        tick_row.add(live_btn)
+        controls_container.add(tick_row)
 
-        # Create disposition controls
+        self.tick_controls = TickControls(slider=slider, tick_label=tick_label, live_btn=live_btn)
+
+        # Disposition row: Fighter | Scout buttons
         fighter_btn = arcade.gui.UIFlatButton(text="Fighter", width=70, height=20)
         scout_btn = arcade.gui.UIFlatButton(text="Scout", width=70, height=20)
 
-        disposition_controls = DispositionControls(
-            fighter_btn=fighter_btn,
-            scout_btn=scout_btn,
-        )
+        disposition_row = arcade.gui.UIBoxLayout(vertical=False, space_between=5)
+        disposition_row.add(fighter_btn)
+        disposition_row.add(scout_btn)
+        controls_container.add(disposition_row)
 
-        # Assign controls to view
-        view.tick_controls = tick_controls
-        view.disposition_controls = disposition_controls
+        self.disposition_controls = DispositionControls(fighter_btn=fighter_btn, scout_btn=scout_btn)
+
+        # Anchor the controls below the map
+        anchor = arcade.gui.UIAnchorLayout()
+        anchor.add(
+            controls_container,
+            anchor_x="left",
+            anchor_y="bottom",
+            align_x=self.left,
+            align_y=self.bottom - self.map_pixel_size - 60,  # Below map
+        )
+        self.ui_manager.add(anchor)
 
         # Register event handlers
         @slider.event("on_change")
         def on_slider_change(event: Any) -> None:
-            current_tick = ctx.client.get_current_tick()
+            current_tick = self.client.get_current_tick()
             if current_tick > 0:
-                view.freeze_frame = int(slider.value * current_tick)
+                self.view_state.freeze_frame = int(slider.value * current_tick)
 
         @live_btn.event("on_click")
         def on_live_click(event: Any) -> None:
-            view.freeze_frame = None
+            self.view_state.freeze_frame = None
 
         @fighter_btn.event("on_click")
         def on_fighter_click(event: Any) -> None:
-            ctx.client.add_player_action(team, CreateUnitPlayerAction(
+            self.client.add_player_action(self.team, CreateUnitPlayerAction(
                 mind=PlanningMind(),
                 unit_type=UnitType.FIGHTER,
             ))
 
         @scout_btn.event("on_click")
         def on_scout_click(event: Any) -> None:
-            ctx.client.add_player_action(team, CreateUnitPlayerAction(
+            self.client.add_player_action(self.team, CreateUnitPlayerAction(
                 mind=PlanningMind(),
                 unit_type=UnitType.SCOUT,
             ))
 
-        # Layout disposition buttons
-        disposition_box = arcade.gui.UIBoxLayout(vertical=False, space_between=5)
-        disposition_box.add(fighter_btn)
-        disposition_box.add(scout_btn)
-        disposition_anchor = arcade.gui.UIAnchorLayout()
-        disposition_anchor.add(
-            disposition_box,
-            anchor_x="left",
-            anchor_y="bottom",
-            align_x=offset_x,
-            align_y=arcade_disposition_y
-        )
-        ui_manager.add(disposition_anchor)
+    def _create_plan_controls(self, unit_type: UnitType) -> PlanControls:
+        """Create plan control widgets for a selected unit."""
+        # Default checkbox states based on unit type
+        fight_default, flee_default = (False, True) if unit_type == UnitType.SCOUT else (True, False)
 
-        # Layout slider widgets
-        h_box = arcade.gui.UIBoxLayout(vertical=False, space_between=5)
-        h_box.add(slider)
-        h_box.add(tick_label)
-        h_box.add(live_btn)
+        # Main vertical layout
+        main_box = arcade.gui.UIBoxLayout(vertical=True, space_between=5)
+
+        # Selection label
+        team_name = self.team.value
+        selection_label = arcade.gui.UILabel(
+            text=f"Selected: {team_name} unit - click {team_name}'s map to add waypoints",
+            font_size=10, text_color=arcade.color.WHITE,
+        )
+        main_box.add(selection_label)
+
+        # Plan text area
+        plan_box_width = self.map_pixel_size
+        plan_box_height = 100
+        text_area = arcade.gui.UITextArea(
+            text="Orders: (none)\nInterrupts:",
+            width=plan_box_width, height=plan_box_height,
+            font_size=10, text_color=arcade.color.WHITE,
+        )
+        text_area.with_background(color=arcade.types.Color(40, 40, 40, 255))
+        text_area.with_border(color=arcade.color.WHITE, width=2)
+        text_area.with_padding(all=5)
+        main_box.add(text_area)
+
+        # Button row
+        button_row = arcade.gui.UIBoxLayout(vertical=False, space_between=10)
+        issue_plan_btn = arcade.gui.UIFlatButton(
+            text="Issue Plan", width=80, height=25,
+            style=arcade.gui.UIFlatButton.STYLE_BLUE,
+        )
+        clear_plan_btn = arcade.gui.UIFlatButton(
+            text="Clear", width=60, height=25,
+            style=arcade.gui.UIFlatButton.STYLE_RED,
+        )
+        button_row.add(issue_plan_btn)
+        button_row.add(clear_plan_btn)
+        main_box.add(button_row)
+
+        # Checkbox row
+        checkbox_row = arcade.gui.UIBoxLayout(vertical=False, space_between=5)
+
+        def make_checkbox_with_label(label: str, default: bool) -> tuple[arcade.gui.UITextureToggle, arcade.gui.UIBoxLayout]:
+            box = arcade.gui.UIBoxLayout(vertical=False, space_between=3)
+            checkbox = arcade.gui.UITextureToggle(
+                on_texture=TEX_CHECKBOX_CHECKED,
+                off_texture=TEX_CHECKBOX_UNCHECKED,
+                width=20, height=20, value=default,
+            )
+            box.add(checkbox)
+            box.add(arcade.gui.UILabel(text=label, font_size=10, text_color=arcade.color.WHITE))
+            return checkbox, box
+
+        fight_checkbox, fight_box = make_checkbox_with_label("fight", fight_default)
+        flee_checkbox, flee_box = make_checkbox_with_label("flee", flee_default)
+        forage_checkbox, forage_box = make_checkbox_with_label("forage", True)
+        come_back_checkbox, come_back_box = make_checkbox_with_label("come back", True)
+
+        checkbox_row.add(fight_box)
+        checkbox_row.add(flee_box)
+        checkbox_row.add(forage_box)
+        checkbox_row.add(come_back_box)
+        main_box.add(checkbox_row)
+
+        # Anchor below disposition controls
         anchor = arcade.gui.UIAnchorLayout()
         anchor.add(
-            h_box,
+            main_box,
             anchor_x="left",
             anchor_y="bottom",
-            align_x=offset_x,
-            align_y=arcade_slider_y
+            align_x=self.left,
+            align_y=self.bottom - self.map_pixel_size - 120,  # Below tick/disposition
         )
-        ui_manager.add(anchor)
+        self.ui_manager.add(anchor)
 
-    create_player_ui(Team.RED, red_offset_x)
-    create_player_ui(Team.BLUE, blue_offset_x)
+        controls = PlanControls(
+            container=anchor,
+            text_area=text_area,
+            issue_plan_btn=issue_plan_btn,
+            clear_plan_btn=clear_plan_btn,
+            selection_label=selection_label,
+            fight_checkbox=fight_checkbox,
+            flee_checkbox=flee_checkbox,
+            forage_checkbox=forage_checkbox,
+            come_back_checkbox=come_back_checkbox,
+        )
 
-    return ctx, window
+        # Event handlers
+        @issue_plan_btn.event("on_click")
+        def on_issue_plan_click(event: Any) -> None:
+            if self.view_state.working_plan and self.view_state.working_plan.orders and self.view_state.selected_unit_id:
+                self.client.add_player_action(self.team, SetUnitPlanPlayerAction(
+                    unit_id=self.view_state.selected_unit_id,
+                    plan=self.view_state.working_plan,
+                ))
+                self._clear_selection()
+
+        @clear_plan_btn.event("on_click")
+        def on_clear_plan_click(event: Any) -> None:
+            if self.view_state.selected_unit_id:
+                knowledge = self.client.get_player_knowledge(self.team, self.client.get_current_tick())
+                unit_type = UnitType.FIGHTER
+                if self.view_state.selected_unit_id in knowledge.last_in_base:
+                    _, selected_unit = knowledge.last_in_base[self.view_state.selected_unit_id]
+                    unit_type = selected_unit.unit_type
+                self.view_state.working_plan = Plan(interrupts=make_initial_working_plan_interrupts(unit_type))
+                if self.plan_controls:
+                    if unit_type == UnitType.SCOUT:
+                        self.plan_controls.fight_checkbox.value = False
+                        self.plan_controls.flee_checkbox.value = True
+                    else:
+                        self.plan_controls.fight_checkbox.value = True
+                        self.plan_controls.flee_checkbox.value = False
+                    self.plan_controls.forage_checkbox.value = True
+                    self.plan_controls.come_back_checkbox.value = True
+
+        def update_interrupts_from_checkboxes() -> None:
+            if self.view_state.working_plan and self.plan_controls:
+                self.view_state.working_plan.interrupts = make_interrupts_from_checkboxes(
+                    fight=self.plan_controls.fight_checkbox.value,
+                    flee=self.plan_controls.flee_checkbox.value,
+                    forage=self.plan_controls.forage_checkbox.value,
+                    come_back=self.plan_controls.come_back_checkbox.value,
+                )
+
+        for checkbox in [fight_checkbox, flee_checkbox, forage_checkbox, come_back_checkbox]:
+            @checkbox.event("on_change")
+            def on_checkbox_change(event: Any) -> None:
+                update_interrupts_from_checkboxes()
+
+        return controls
+
+    def _clear_selection(self) -> None:
+        """Clear the current unit selection and plan controls."""
+        self.view_state.selected_unit_id = None
+        self.view_state.working_plan = None
+        if self.plan_controls is not None:
+            self.ui_manager.remove(self.plan_controls.container)
+            self.plan_controls = None
+
+    def on_draw(self) -> None:
+        """Draw the player's map view."""
+        freeze_frame = self.view_state.freeze_frame
+        knowledge = self.view_state.knowledge
+        view_t = knowledge.tick if freeze_frame is None else freeze_frame
+        logbook = knowledge.logbook.observation_log
+
+        map_pixel_width = self.grid_width * TILE_SIZE
+        map_pixel_height = self.grid_height * TILE_SIZE
+
+        arcade.draw_lbwh_rectangle_filled(0, 0, map_pixel_width, map_pixel_height, (0, 0, 0))
+
+        cur_observations = logbook.get(view_t, {})
+
+        # Draw cells with gradient tinting based on observation age
+        for pos, (last_observed_tick, _) in knowledge.logbook.last_observations_by_pos.items():
+            age = view_t - last_observed_tick
+            brightness = int(80 * (2 ** (-(age / CELL_BRIGHTNESS_HALFLIFE))))
+            brightness = max(0, min(80, brightness))
+            cell_left = pos.x * TILE_SIZE
+            cell_bottom = map_pixel_height - (pos.y + 1) * TILE_SIZE
+            arcade.draw_lbwh_rectangle_filled(cell_left, cell_bottom, TILE_SIZE, TILE_SIZE, (brightness, brightness, brightness))
+
+        draw_grid(map_pixel_width, map_pixel_height, self.grid_width, self.grid_height)
+
+        if freeze_frame is None:
+            for pos, (t, contents_list) in knowledge.logbook.last_observations_by_pos.items():
+                for contents in sorted(contents_list, key=lambda x: (isinstance(x, UnitPresent), isinstance(x, FoodPresent))):
+                    if isinstance(contents, BasePresent):
+                        draw_base_cell(pos, contents.team, map_pixel_height)
+                    elif isinstance(contents, UnitPresent):
+                        if pos not in cur_observations and contents.team == self.team:
+                            continue
+                        draw_unit_at(
+                            contents.team, pos, map_pixel_height,
+                            outline_only=pos not in cur_observations,
+                            unit_type=contents.unit_type,
+                        )
+                    elif isinstance(contents, FoodPresent):
+                        draw_food({pos: contents.count}, map_pixel_height, outline_only=pos not in cur_observations)
+        else:
+            for pos, contents_list in logbook.get(freeze_frame, {}).items():
+                for contents in sorted(contents_list, key=lambda x: (isinstance(x, UnitPresent), isinstance(x, FoodPresent))):
+                    if isinstance(contents, BasePresent):
+                        draw_base_cell(pos, contents.team, map_pixel_height)
+                    elif isinstance(contents, UnitPresent):
+                        draw_unit_at(contents.team, pos, map_pixel_height, unit_type=contents.unit_type)
+                    elif isinstance(contents, FoodPresent):
+                        draw_food({pos: contents.count}, map_pixel_height)
+
+        # Draw predicted positions
+        for unit_id, trajectory in knowledge.expected_trajectories.items():
+            predicted_pos = trajectory.get(view_t)
+            if predicted_pos is None:
+                continue
+            unit_type = knowledge.last_in_base[unit_id][1].unit_type
+            draw_unit_at(self.team, predicted_pos, map_pixel_height, outline_only=True, unit_type=unit_type)
+
+    def on_update(self, delta_time: float) -> None:
+        """Update UI state."""
+        # Sync knowledge from lifecycle
+        self.view_state.knowledge = self.lifecycle.knowledge[self.team]
+
+        # Update tick controls
+        current_tick = self.client.get_current_tick()
+        if current_tick > 0 and self.tick_controls:
+            if self.view_state.freeze_frame is None:
+                self.tick_controls.slider.value = 1.0
+                self.tick_controls.tick_label.text = f"t={current_tick}"
+            else:
+                self.tick_controls.slider.value = self.view_state.freeze_frame / current_tick
+                self.tick_controls.tick_label.text = f"t={self.view_state.freeze_frame}"
+
+        # Update disposition button text
+        if self.disposition_controls:
+            food_count = self.client.get_food_count_in_base(self.team)
+            has_food = food_count > 0
+            self.disposition_controls.fighter_btn.text = f"Fighter ({food_count})"
+            self.disposition_controls.scout_btn.text = f"Scout ({food_count})"
+            self.disposition_controls.fighter_btn.disabled = not has_food
+            self.disposition_controls.scout_btn.disabled = not has_food
+
+        # Handle plan controls
+        if self.view_state.selected_unit_id is not None:
+            knowledge = self.client.get_player_knowledge(self.team, self.client.get_current_tick())
+            selected_unit = knowledge.own_units_in_base.get(self.view_state.selected_unit_id)
+
+            if selected_unit is None:
+                self._clear_selection()
+            elif self.plan_controls is None and self.view_state.working_plan is not None:
+                self.plan_controls = self._create_plan_controls(selected_unit.unit_type)
+
+            if self.view_state.working_plan is not None and self.plan_controls is not None and selected_unit is not None:
+                plan_lines = format_plan(self.view_state.working_plan, selected_unit)
+                self.plan_controls.text_area.text = "\n".join(plan_lines)
+        else:
+            if self.plan_controls is not None:
+                self.ui_manager.remove(self.plan_controls.container)
+                self.plan_controls = None
+
+    def on_mouse_press(self, x: int, y: int, button: int, modifiers: int) -> bool:
+        """Handle mouse clicks on the map."""
+        if button != arcade.MOUSE_BUTTON_LEFT:
+            return False
+
+        # Only allow interaction when live
+        if self.view_state.freeze_frame is not None:
+            return False
+
+        grid_pos = screen_to_grid(x, y, self.grid_width, self.grid_height, self.map_height)
+        if grid_pos is None:
+            return False
+
+        current_elapsed = self.start_time_getter()
+        is_double_click = (
+            self.view_state.last_click_pos == grid_pos
+            and current_elapsed - self.view_state.last_click_time < 0.3
+        )
+        self.view_state.last_click_time = current_elapsed
+        self.view_state.last_click_pos = grid_pos
+
+        if is_double_click and self.view_state.selected_unit_id is not None:
+            if self.view_state.working_plan is not None and self.view_state.working_plan.orders:
+                self.client.add_player_action(self.team, SetUnitPlanPlayerAction(
+                    unit_id=self.view_state.selected_unit_id,
+                    plan=self.view_state.working_plan,
+                ))
+                self._clear_selection()
+        elif self.view_state.selected_unit_id is not None:
+            if self.view_state.working_plan is None:
+                knowledge = self.client.get_player_knowledge(self.team, self.client.get_current_tick())
+                unit_type = UnitType.FIGHTER
+                if self.view_state.selected_unit_id in knowledge.last_in_base:
+                    _, selected_unit = knowledge.last_in_base[self.view_state.selected_unit_id]
+                    unit_type = selected_unit.unit_type
+                self.view_state.working_plan = Plan(interrupts=make_initial_working_plan_interrupts(unit_type))
+            self.view_state.working_plan.orders.append(Move(target=grid_pos))
+        else:
+            knowledge = self.client.get_player_knowledge(self.team, self.client.get_current_tick())
+            for unit_id, unit in knowledge.own_units_in_base.items():
+                if unit.pos == grid_pos:
+                    self.view_state.selected_unit_id = unit_id
+                    self.view_state.working_plan = Plan(interrupts=make_initial_working_plan_interrupts(unit.unit_type))
+                    break
+
+        return True
+
+
+class AntGameView(arcade.View):
+    """Main view containing all game sections."""
+
+    def __init__(self, lifecycle: GameLifecycle):
+        super().__init__()
+        self.lifecycle = lifecycle
+        self.start_at = time.time()
+
+        self.ui_manager = arcade.gui.UIManager()
+        self.section_manager = SectionManager(self)
+
+        # Create view states for each team
+        self.view_states = {
+            team: PlayerViewState(knowledge=lifecycle.knowledge[team])
+            for team in Team
+        }
+
+        # Sections will be created in setup
+        self.red_section: PlayerMapSection | None = None
+        self.god_section: GodMapSection | None = None
+        self.blue_section: PlayerMapSection | None = None
+
+    def get_elapsed_secs(self) -> float:
+        return time.time() - self.start_at
+
+    def setup(self) -> None:
+        """Set up the view with sections."""
+        grid_width = self.lifecycle.grid_width
+        grid_height = self.lifecycle.grid_height
+        map_pixel_size = grid_width * TILE_SIZE
+        control_area_height = 200
+
+        # Calculate section positions
+        red_left = PADDING
+        god_left = PADDING * 2 + map_pixel_size
+        blue_left = PADDING * 3 + map_pixel_size * 2
+        section_bottom = control_area_height + PADDING
+
+        # Create sections
+        self.red_section = PlayerMapSection(
+            left=red_left,
+            bottom=section_bottom,
+            width=map_pixel_size,
+            height=map_pixel_size,
+            team=Team.RED,
+            lifecycle=self.lifecycle,
+            view_state=self.view_states[Team.RED],
+            ui_manager=self.ui_manager,
+            start_time_getter=self.get_elapsed_secs,
+        )
+
+        self.god_section = GodMapSection(
+            left=god_left,
+            bottom=section_bottom,
+            width=map_pixel_size,
+            height=map_pixel_size,
+            lifecycle=self.lifecycle,
+        )
+
+        self.blue_section = PlayerMapSection(
+            left=blue_left,
+            bottom=section_bottom,
+            width=map_pixel_size,
+            height=map_pixel_size,
+            team=Team.BLUE,
+            lifecycle=self.lifecycle,
+            view_state=self.view_states[Team.BLUE],
+            ui_manager=self.ui_manager,
+            start_time_getter=self.get_elapsed_secs,
+        )
+
+        # Add sections to the view
+        self.section_manager.add_section(self.red_section)
+        self.section_manager.add_section(self.god_section)
+        self.section_manager.add_section(self.blue_section)
+
+    def on_show_view(self) -> None:
+        self.ui_manager.enable()
+
+    def on_hide_view(self) -> None:
+        self.ui_manager.disable()
+
+    def on_draw(self) -> None:
+        self.clear()
+        # Sections draw themselves via section_manager
+        self.ui_manager.draw()
+
+    def on_update(self, delta_time: float) -> None:
+        self.ui_manager.on_update(delta_time)  # type: ignore[no-untyped-call]
+
+    def on_mouse_press(self, x: int, y: int, button: int, modifiers: int) -> bool:
+        # Let UI manager handle it first
+        if self.ui_manager.on_mouse_press(x, y, button, modifiers):
+            return True
+        return False
+
+
+def create_window_from_lifecycle(lifecycle: GameLifecycle) -> tuple[AntGameView, arcade.Window]:
+    """Create UI window and view from a GameLifecycle."""
+    grid_width = lifecycle.grid_width
+    grid_height = lifecycle.grid_height
+    map_pixel_size = grid_width * TILE_SIZE
+    control_area_height = 200
+
+    window_width = map_pixel_size * 3 + PADDING * 4
+    window_height = map_pixel_size + PADDING * 2 + control_area_height
+
+    window = arcade.Window(window_width, window_height, "Ant RTS")
+    window.set_update_rate(1/60)
+
+    view = AntGameView(lifecycle)
+    view.setup()
+    window.show_view(view)
+
+    return view, window
 
 
 def main() -> None:
     """Main entry point: parse args, create lifecycle, and run UI."""
     args = parse_args()
     lifecycle = create_lifecycle_from_args(args)
-    ctx, window = create_window_from_lifecycle(lifecycle)
+    view, window = create_window_from_lifecycle(lifecycle)
     arcade.run()
 
 
