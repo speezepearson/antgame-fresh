@@ -148,8 +148,6 @@ class GameServer:
                     for tick, units in observations.items()
                 }
 
-                print(f'serialized observations for {set(serialized_observations.keys())}: {serialized_observations}')
-
                 # Discard old observations now that the client has caught up
                 self.observation_store.discard_up_to(team, after)
 

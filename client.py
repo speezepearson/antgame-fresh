@@ -164,8 +164,6 @@ class RemoteClient(GameClient):
             tick = Timestamp(int(tick_str))
             observations[tick] = [deserialize_unit(u) for u in units_data]
 
-        print(f'got observations for {set(observations.keys())}: {observations}')
-
         # Apply observations in order
         for tick in sorted(observations.keys()):
             self._current_knowledge.observe(tick, observations[tick])
