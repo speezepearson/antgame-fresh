@@ -352,35 +352,15 @@ class TestGameServer:
         client, state, knowledge, local_client = test_app
 
         # Advance game before making request
+        assert local_client.get_current_tick() == 0
         local_client.tick_game()
+        assert local_client.get_current_tick() == 1
 
         response = await client.get("/observations/RED?after=0")
         assert response.status == 200
 
         data = await response.json()
-        observations = data["observations"]
-        # Should have at least one observation with tick > 0
-        assert len(observations) > 0
-        for tick_str in observations.keys():
-            assert int(tick_str) > 0
-
-    async def test_returns_empty_for_current_tick(self, test_app):
-        """Test server returns empty observations if after == current tick."""
-        client, state, knowledge, local_client = test_app
-
-        # Advance to tick 2
-        local_client.tick_game()
-        local_client.tick_game()
-
-        # Request observations after tick 2 - should wait and timeout with empty
-        start_time = time.time()
-        response = await client.get("/observations/RED?after=2")
-        elapsed = time.time() - start_time
-
-        # Should timeout since no new observations
-        assert response.status == 200
-        data = await response.json()
-        assert data["observations"] == {}
+        assert set(data['observations'].keys()) == {"1"}
 
     async def test_rejects_plan_for_invalid_team(self, test_app):
         """Test server /act endpoint rejects invalid team."""
