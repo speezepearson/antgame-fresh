@@ -3,17 +3,64 @@
 from __future__ import annotations
 import asyncio
 import threading
+from copy import deepcopy
+from dataclasses import dataclass, field
 from aiohttp import web
-from typing import Any
+from typing import Any, Callable
 
-from mechanics import Team, UnitId, GameState
+from core import Timestamp
+from mechanics import Team, UnitId, Unit, GameState
 from planning import PlanningMind
 from knowledge import PlayerKnowledge
 from serialization import (
-    serialize_player_knowledge,
     serialize_region,
+    serialize_unit,
     deserialize_plan,
 )
+
+
+@dataclass
+class ObservationStore:
+    """Stores observation snapshots for each team at each tick.
+
+    This is used by the server to capture and serve observations
+    efficiently without serializing full PlayerKnowledge.
+    """
+
+    _observations: dict[Team, dict[Timestamp, list[Unit]]] = field(default_factory=dict)
+    _lock: threading.Lock = field(default_factory=threading.Lock)
+
+    def record(self, team: Team, tick: Timestamp, units: list[Unit]) -> None:
+        """Record a snapshot of observations at the given tick.
+
+        Deep copies units since they are mutable.
+        """
+        with self._lock:
+            if team not in self._observations:
+                self._observations[team] = {}
+            self._observations[team][tick] = [deepcopy(u) for u in units]
+
+    def get_after(self, team: Team, after: Timestamp) -> dict[Timestamp, list[Unit]]:
+        """Get all observations with timestamp > after."""
+        with self._lock:
+            team_obs = self._observations.get(team, {})
+            return {tick: units for tick, units in team_obs.items() if tick > after}
+
+    def get_latest_tick(self, team: Team) -> Timestamp:
+        """Get the latest tick with observations for a team."""
+        with self._lock:
+            team_obs = self._observations.get(team, {})
+            if not team_obs:
+                return Timestamp(0)
+            return max(team_obs.keys())
+
+    def discard_up_to(self, team: Team, up_to: Timestamp) -> None:
+        """Discard observations with timestamp <= up_to."""
+        with self._lock:
+            team_obs = self._observations.get(team, {})
+            ticks_to_remove = [tick for tick in team_obs if tick <= up_to]
+            for tick in ticks_to_remove:
+                del team_obs[tick]
 
 
 class GameServer:
@@ -23,11 +70,13 @@ class GameServer:
         self,
         state: GameState,
         knowledge: dict[Team, PlayerKnowledge],
+        observation_store: ObservationStore,
         port: int = 5000,
         ready_event: threading.Event | None = None,
     ):
         self.state = state
         self.knowledge = knowledge
+        self.observation_store = observation_store
         self.port = port
         self.ready_event = ready_event
         self.server_thread: threading.Thread | None = None
@@ -37,7 +86,7 @@ class GameServer:
     def _create_app(self) -> web.Application:
         """Create and configure the aiohttp application."""
         app = web.Application()
-        app.router.add_get("/knowledge/{team_name}", self._get_knowledge)
+        app.router.add_get("/observations/{team_name}", self._get_observations)
         app.router.add_get("/food_count/{team_name}", self._get_food_count)
         app.router.add_post("/act/{team_name}/{unit_id}", self._set_unit_plan)
 
@@ -51,11 +100,22 @@ class GameServer:
         if self.ready_event is not None:
             self.ready_event.set()
 
-    async def _get_knowledge(self, request: web.Request) -> web.Response:
-        """Get player knowledge for a team, waiting for a specific tick.
+    async def _get_observations(self, request: web.Request) -> web.Response:
+        """Get observation snapshots for a team after a given tick.
 
         Query params:
-            tick: Wait until knowledge.tick >= this value before returning
+            after: Return observations with timestamp > after (required)
+
+        Returns:
+            JSON with:
+                - observations: dict mapping tick -> list of serialized units
+                - base_region: the team's base region (for initial setup)
+                - grid_width, grid_height: grid dimensions
+
+        Semantics:
+            - if after == state.now, returns empty observations dict
+            - if after == state.now - 1, returns one batch of observations
+            - After returning, discards observations at or before `after`
         """
         team_name = request.match_info["team_name"]
         try:
@@ -65,35 +125,51 @@ class GameServer:
                 {"error": f"Invalid team: {team_name}"}, status=400
             )
 
-        # Get requested tick (default to current tick)
-        tick_str = request.query.get("tick")
-        if tick_str is not None:
-            requested_tick = int(tick_str)
-        else:
-            requested_tick = self.knowledge[team].tick
+        # Get 'after' parameter (required)
+        after_str = request.query.get("after")
+        if after_str is None:
+            return web.json_response(
+                {"error": "Missing required 'after' query parameter"}, status=400
+            )
+        after = Timestamp(int(after_str))
 
-        # Long-polling: wait until knowledge reaches requested tick
+        # Long-polling: wait until we have observations after the requested tick
         timeout = 30  # seconds
         elapsed = 0.0
         while elapsed < timeout:
-            current_tick = self.knowledge[team].tick
-            if current_tick >= requested_tick:
-                # Knowledge is ready
+            latest_tick = self.observation_store.get_latest_tick(team)
+            if latest_tick > after:
+                # We have new observations
+                observations = self.observation_store.get_after(team, after)
+
+                # Serialize observations: dict[Timestamp, list[Unit]] -> dict[str, list[dict]]
+                serialized_observations = {
+                    str(tick): [serialize_unit(u) for u in units]
+                    for tick, units in observations.items()
+                }
+
+                # Discard old observations now that the client has caught up
+                self.observation_store.discard_up_to(team, after)
+
                 return web.json_response(
                     {
-                        "knowledge": serialize_player_knowledge(self.knowledge[team]),
+                        "observations": serialized_observations,
                         "base_region": serialize_region(self.state.base_regions[team]),
+                        "grid_width": self.state.grid_width,
+                        "grid_height": self.state.grid_height,
                     }
                 )
 
             await asyncio.sleep(0.05)
             elapsed += 0.05
 
-        # Timeout - return current knowledge anyway
+        # Timeout - return empty observations
         return web.json_response(
             {
-                "knowledge": serialize_player_knowledge(self.knowledge[team]),
+                "observations": {},
                 "base_region": serialize_region(self.state.base_regions[team]),
+                "grid_width": self.state.grid_width,
+                "grid_height": self.state.grid_height,
             }
         )
 

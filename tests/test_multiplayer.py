@@ -8,6 +8,7 @@ from typing import Any, AsyncIterator, Generator, Iterator, cast
 from aiohttp.test_utils import TestClient, TestServer
 
 from core import Pos, Region, Timestamp
+from logbook import Logbook
 from mechanics import (
     Team,
     Unit,
@@ -33,6 +34,10 @@ from planning import (
 )
 from knowledge import PlayerKnowledge, ExpectedTrajectory
 from serialization import (
+    deserialize_logbook,
+    deserialize_mind,
+    serialize_logbook,
+    serialize_mind,
     serialize_pos,
     deserialize_pos,
     serialize_region,
@@ -53,15 +58,9 @@ from serialization import (
     deserialize_plan,
     serialize_unit,
     deserialize_unit,
-    serialize_observation_log,
-    deserialize_observation_log,
-    serialize_expected_trajectory,
-    deserialize_expected_trajectory,
-    serialize_player_knowledge,
-    deserialize_player_knowledge,
 )
 from client import LocalClient, RemoteClient, GameClient
-from server import GameServer
+from server import GameServer, ObservationStore
 from test_utils import make_unit
 
 
@@ -210,73 +209,22 @@ class TestSerialization:
         mind = cast(PlanningMind, deserialized.mind)
         assert len(mind.plan.orders) == 1
 
-    def test_observation_log_roundtrips(self):
-        """Test observation log serialization."""
-        log = {
-            Timestamp(0): {
-                Pos(0, 0): [Empty()],
-                Pos(1, 1): [UnitPresent(team=Team.RED, unit_id=UnitId(1))],
-            },
-            Timestamp(5): {
-                Pos(2, 2): [FoodPresent(count=3)],
-            },
-        }
-        data = serialize_observation_log(log)  # type: ignore[arg-type]
-        deserialized = deserialize_observation_log(data)
-        assert Timestamp(0) in deserialized
-        assert Timestamp(5) in deserialized
-        assert Pos(0, 0) in deserialized[Timestamp(0)]
-        assert Pos(2, 2) in deserialized[Timestamp(5)]
+    def test_planning_mind_roundtrips(self):
+        """Test mind serialization."""
+        mind = PlanningMind(logbook=Logbook(), plan=Plan(orders=[Move(target=Pos(10, 10))]))
+        data = serialize_mind(mind)
+        deserialized = deserialize_mind(data)
+        assert deserialized == mind
 
-    def test_expected_trajectory_roundtrips(self):
-        """Test expected trajectory serialization."""
-        trajectory: ExpectedTrajectory = {
-            Timestamp(0): Pos(0, 0),
-            Timestamp(1): Pos(1, 1),
-            Timestamp(2): Pos(2, 2),
-        }
-        data = serialize_expected_trajectory(trajectory)
-        deserialized = deserialize_expected_trajectory(data)
-        assert deserialized == trajectory
-
-    def test_player_knowledge_roundtrips(self):
+    def test_logbook_roundtrips(self):
         """Test player knowledge serialization."""
-        knowledge = PlayerKnowledge(
-            team=Team.RED,
-            grid_width=32,
-            grid_height=32,
-            tick=Timestamp(5),
-        )
-        # Add observations to the logbook
-        knowledge.logbook.observation_log = {
-            Timestamp(0): {Pos(0, 0): [Empty()]},
-        }
-        knowledge.last_in_base = {
-            UnitId(1): (
-                Timestamp(3),
-                make_unit(Team.RED, Pos(5, 5)),
-            )
-        }
-        knowledge.expected_trajectories = {
-            UnitId(2): {
-                Timestamp(2): Pos(3, 3),
-                Timestamp(3): Pos(4, 4),
-            }
-        }
-        knowledge.own_units_in_base = {
-            UnitId(1): make_unit(Team.RED, Pos(5, 5)),
-        }
-
-        data = serialize_player_knowledge(knowledge)
-        deserialized = deserialize_player_knowledge(data)
-
-        assert deserialized.team == knowledge.team
-        assert deserialized.grid_width == knowledge.grid_width
-        assert deserialized.grid_height == knowledge.grid_height
-        assert deserialized.tick == knowledge.tick
-        assert Timestamp(0) in deserialized.logbook.observation_log
-        assert UnitId(1) in deserialized.last_in_base
-        assert UnitId(2) in deserialized.expected_trajectories
+        logbook = Logbook()
+        logbook.add_latest_observations(Timestamp(0), {Pos(0, 0): [Empty()]})
+        logbook.add_latest_observations(Timestamp(1), {Pos(1, 1): [UnitPresent(team=Team.RED, unit_id=UnitId(1))]})
+        logbook.add_latest_observations(Timestamp(2), {Pos(2, 2): [FoodPresent(count=3)]})
+        data = serialize_logbook(logbook)
+        deserialized = deserialize_logbook(data)
+        assert deserialized == logbook
 
 
 # ===== LocalClient Tests =====
@@ -353,69 +301,66 @@ class TestGameServer:
             Team.RED: PlayerKnowledge(Team.RED, 16, 16, state.now),
             Team.BLUE: PlayerKnowledge(Team.BLUE, 16, 16, state.now),
         }
-        local_client = LocalClient(state=state, knowledge=knowledge)
+        observation_store = ObservationStore()
+        local_client = LocalClient(
+            state=state, knowledge=knowledge, observation_store=observation_store
+        )
 
         # Initialize knowledge with base observations
         local_client._let_all_players_observe()
 
-        server = GameServer(state, knowledge, port=5000)
+        server = GameServer(state, knowledge, observation_store, port=5000)
         app = server._create_app()
 
         async with TestClient(TestServer(app)) as client:
             yield client, state, knowledge, local_client
 
-    async def test_returns_knowledge_for_valid_team(self, test_app):
-        """Test server /knowledge endpoint returns data for valid team."""
+    async def test_returns_observations_for_valid_team(self, test_app):
+        """Test server /observations endpoint returns data for valid team."""
         client, state, knowledge, local_client = test_app
 
-        response = await client.get("/knowledge/RED")
+        response = await client.get("/observations/RED?after=-1")
         assert response.status == 200
 
         data = await response.json()
-        assert "knowledge" in data
+        assert "observations" in data
         assert "base_region" in data
+        assert "grid_width" in data
+        assert "grid_height" in data
 
-        knowledge_data = data["knowledge"]
-        assert knowledge_data["team"] == "RED"
-        assert knowledge_data["grid_width"] == 16
-        assert knowledge_data["grid_height"] == 16
+        assert data["grid_width"] == 16
+        assert data["grid_height"] == 16
 
     async def test_rejects_invalid_team(self, test_app):
-        """Test server /knowledge endpoint rejects invalid team."""
+        """Test server /observations endpoint rejects invalid team."""
         client, state, knowledge, local_client = test_app
 
-        response = await client.get("/knowledge/INVALID")
+        response = await client.get("/observations/INVALID?after=0")
         assert response.status == 400
         assert "error" in await response.json()
 
-    async def test_returns_knowledge_at_requested_tick(self, test_app):
-        """Test server /knowledge endpoint with tick parameter."""
+    async def test_rejects_missing_after_param(self, test_app):
+        """Test server /observations endpoint requires 'after' parameter."""
+        client, state, knowledge, local_client = test_app
+
+        response = await client.get("/observations/RED")
+        assert response.status == 400
+        assert "error" in await response.json()
+
+    async def test_returns_observations_after_requested_tick(self, test_app):
+        """Test server /observations endpoint with after parameter."""
         client, state, knowledge, local_client = test_app
 
         # Advance game before making request
+        assert local_client.get_current_tick() == 0
         local_client.tick_game()
+        assert local_client.get_current_tick() == 1
 
-        response = await client.get("/knowledge/RED?tick=1")
+        response = await client.get("/observations/RED?after=0")
         assert response.status == 200
 
         data = await response.json()
-        assert data["knowledge"]["tick"] >= 1
-
-    async def test_returns_immediately_for_past_tick(self, test_app):
-        """Test server returns immediately if knowledge already at requested tick."""
-        client, state, knowledge, local_client = test_app
-
-        # Advance to tick 2
-        local_client.tick_game()
-        local_client.tick_game()
-
-        start_time = time.time()
-        response = await client.get("/knowledge/RED?tick=1")
-        elapsed = time.time() - start_time
-
-        assert response.status == 200
-        assert elapsed < 0.5  # Should be nearly instant
-        assert (await response.json())["knowledge"]["tick"] >= 1
+        assert set(data['observations'].keys()) == {"1"}
 
     async def test_rejects_plan_for_invalid_team(self, test_app):
         """Test server /act endpoint rejects invalid team."""
@@ -464,13 +409,18 @@ def running_server() -> Iterator[RunningServerFixture]:
         Team.RED: PlayerKnowledge(Team.RED, 16, 16, state.now),
         Team.BLUE: PlayerKnowledge(Team.BLUE, 16, 16, state.now),
     }
-    local_client = LocalClient(state=state, knowledge=knowledge)
+    observation_store = ObservationStore()
+    local_client = LocalClient(
+        state=state, knowledge=knowledge, observation_store=observation_store
+    )
 
     # Initialize knowledge with base observations
     local_client._let_all_players_observe()
 
     ready_event = threading.Event()
-    server = GameServer(state, knowledge, port=port, ready_event=ready_event)
+    server = GameServer(
+        state, knowledge, observation_store, port=port, ready_event=ready_event
+    )
     server.start()
     ready_event.wait(timeout=5.0)
 
@@ -618,6 +568,10 @@ class TestClientServerIntegration:
         red_knowledge = red_client.get_player_knowledge(Team.RED, tick=state.now)
         blue_knowledge = blue_client.get_player_knowledge(Team.BLUE, tick=state.now)
 
+        # Store tick values before advancing (knowledge is updated in-place)
+        old_red_tick = red_knowledge.tick
+        old_blue_tick = blue_knowledge.tick
+
         # Advance game using local_client
         local_client.tick_game()
 
@@ -625,5 +579,5 @@ class TestClientServerIntegration:
         updated_red = red_client.get_player_knowledge(Team.RED, tick=state.now)
         updated_blue = blue_client.get_player_knowledge(Team.BLUE, tick=state.now)
 
-        assert updated_red.tick > red_knowledge.tick
-        assert updated_blue.tick > blue_knowledge.tick
+        assert updated_red.tick > old_red_tick
+        assert updated_blue.tick > old_blue_tick

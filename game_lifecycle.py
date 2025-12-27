@@ -87,7 +87,7 @@ def run_server_game(
     port: int,
 ) -> GameLifecycle:
     """Create and start a game server."""
-    from server import GameServer
+    from server import GameServer, ObservationStore
 
     state = make_game(
         make_mind=PlanningMind,
@@ -111,10 +111,14 @@ def run_server_game(
         ),
     }
 
-    local_client = LocalClient(state=state, knowledge=knowledge)
+    # Create shared observation store for server mode
+    observation_store = ObservationStore()
+    local_client = LocalClient(
+        state=state, knowledge=knowledge, observation_store=observation_store
+    )
 
     # Start the HTTP server
-    server = GameServer(state, knowledge, port=port)
+    server = GameServer(state, knowledge, observation_store, port=port)
     server.start()
     print(f"Server started on port {port}")
 

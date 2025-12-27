@@ -3,15 +3,18 @@
 from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Optional, Any, cast
+from typing import Optional, Any, cast, TYPE_CHECKING
 import json
 import requests
 import time
 
 from core import Pos, Region, Timestamp
 from knowledge import PlayerKnowledge
-from mechanics import GameState, PlayerAction, Team, UnitId, UnitType
+from mechanics import GameState, PlayerAction, Team, UnitId, UnitType, Unit
 from planning import Plan, PlanningMind
+
+if TYPE_CHECKING:
+    from server import ObservationStore
 
 
 class GameClient(ABC):
@@ -68,6 +71,7 @@ class LocalClient(GameClient):
 
     state: GameState
     knowledge: dict[Team, PlayerKnowledge]
+    observation_store: Optional["ObservationStore"] = None
     queued_player_actions: dict[Team, list[PlayerAction]] = field(default_factory=dict)
 
     def get_player_knowledge(self, team: Team, tick: Timestamp) -> PlayerKnowledge:
@@ -104,10 +108,14 @@ class LocalClient(GameClient):
 
     def _let_all_players_observe(self) -> None:
         for team, knowledge in self.knowledge.items():
-            knowledge.observe(self.state.now, [
+            units_in_base = [
                 u for u in self.state.units.values()
                 if u.team == team and u.is_in_base(self.state)
-            ])
+            ]
+            # Record to observation store if available (for server mode)
+            if self.observation_store is not None:
+                self.observation_store.record(team, self.state.now, units_in_base)
+            knowledge.observe(self.state.now, units_in_base)
 
 @dataclass
 class RemoteClient(GameClient):
@@ -121,30 +129,51 @@ class RemoteClient(GameClient):
 
     def __post_init__(self) -> None:
         """Initialize by fetching initial state."""
-        self._fetch_knowledge(tick=Timestamp(0))
+        self._fetch_observations(after=Timestamp(-1))
 
-    def _fetch_knowledge(self, tick: Timestamp) -> None:
-        """Fetch knowledge from server, waiting for next tick if needed."""
-        # Wait for tick > last_tick
-        print("fetching knowledge", self.team.name, tick)
+    def _fetch_observations(self, after: Timestamp) -> None:
+        """Fetch observations from server and apply them to local knowledge.
+
+        Args:
+            after: Fetch observations with timestamp > after
+        """
+        from serialization import deserialize_unit
+
+        print("fetching observations", self.team.name, "after", after)
         response = requests.get(
-            f"{self.url}/knowledge/{self.team.name}", params={"tick": tick}, timeout=30
+            f"{self.url}/observations/{self.team.name}",
+            params={"after": after},
+            timeout=30,
         )
-        # print('response', response.status_code, response.text)
         response.raise_for_status()
         data = response.json()
 
-        # Deserialize knowledge
-        from serialization import deserialize_player_knowledge
+        # On first fetch, initialize knowledge with grid dimensions
+        if self._current_knowledge is None:
+            self._current_knowledge = PlayerKnowledge(
+                team=self.team,
+                grid_width=data["grid_width"],
+                grid_height=data["grid_height"],
+                tick=Timestamp(0),
+            )
+            self._base_region = deserialize_region(data["base_region"])
 
-        self._current_knowledge = deserialize_player_knowledge(data["knowledge"])
-        self._base_region = deserialize_region(data["base_region"])
-        self._last_tick = self._current_knowledge.tick
+        # Deserialize and apply observations in timestamp order
+        observations: dict[Timestamp, list[Unit]] = {}
+        for tick_str, units_data in data.get("observations", {}).items():
+            tick = Timestamp(int(tick_str))
+            observations[tick] = [deserialize_unit(u) for u in units_data]
+
+        # Apply observations in order
+        for tick in sorted(observations.keys()):
+            self._current_knowledge.observe(tick, observations[tick])
+            self._last_tick = tick
+
         print(
-            "fetched knowledge for",
+            "fetched observations for",
             self.team.name,
-            "at >=",
-            tick,
+            "after",
+            after,
             ", now t=",
             self._last_tick,
         )
@@ -156,10 +185,11 @@ class RemoteClient(GameClient):
         if tick <= self._last_tick and self._current_knowledge is not None:
             return self._current_knowledge
 
-        self._fetch_knowledge(tick=tick)
+        # Request observations after our current tick
+        self._fetch_observations(after=self._last_tick)
 
         if self._current_knowledge is None:
-            raise RuntimeError("Failed to fetch knowledge from server")
+            raise RuntimeError("Failed to fetch observations from server")
 
         return self._current_knowledge
 
