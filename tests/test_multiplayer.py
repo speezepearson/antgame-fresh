@@ -61,7 +61,7 @@ from serialization import (
     deserialize_player_knowledge,
 )
 from client import LocalClient, RemoteClient, GameClient
-from server import GameServer
+from server import GameServer, ObservationStore
 from test_utils import make_unit
 
 
@@ -353,69 +353,86 @@ class TestGameServer:
             Team.RED: PlayerKnowledge(Team.RED, 16, 16, state.now),
             Team.BLUE: PlayerKnowledge(Team.BLUE, 16, 16, state.now),
         }
-        local_client = LocalClient(state=state, knowledge=knowledge)
+        observation_store = ObservationStore()
+        local_client = LocalClient(
+            state=state, knowledge=knowledge, observation_store=observation_store
+        )
 
         # Initialize knowledge with base observations
         local_client._let_all_players_observe()
 
-        server = GameServer(state, knowledge, port=5000)
+        server = GameServer(state, knowledge, observation_store, port=5000)
         app = server._create_app()
 
         async with TestClient(TestServer(app)) as client:
             yield client, state, knowledge, local_client
 
-    async def test_returns_knowledge_for_valid_team(self, test_app):
-        """Test server /knowledge endpoint returns data for valid team."""
+    async def test_returns_observations_for_valid_team(self, test_app):
+        """Test server /observations endpoint returns data for valid team."""
         client, state, knowledge, local_client = test_app
 
-        response = await client.get("/knowledge/RED")
+        response = await client.get("/observations/RED?after=-1")
         assert response.status == 200
 
         data = await response.json()
-        assert "knowledge" in data
+        assert "observations" in data
         assert "base_region" in data
+        assert "grid_width" in data
+        assert "grid_height" in data
 
-        knowledge_data = data["knowledge"]
-        assert knowledge_data["team"] == "RED"
-        assert knowledge_data["grid_width"] == 16
-        assert knowledge_data["grid_height"] == 16
+        assert data["grid_width"] == 16
+        assert data["grid_height"] == 16
 
     async def test_rejects_invalid_team(self, test_app):
-        """Test server /knowledge endpoint rejects invalid team."""
+        """Test server /observations endpoint rejects invalid team."""
         client, state, knowledge, local_client = test_app
 
-        response = await client.get("/knowledge/INVALID")
+        response = await client.get("/observations/INVALID?after=0")
         assert response.status == 400
         assert "error" in await response.json()
 
-    async def test_returns_knowledge_at_requested_tick(self, test_app):
-        """Test server /knowledge endpoint with tick parameter."""
+    async def test_rejects_missing_after_param(self, test_app):
+        """Test server /observations endpoint requires 'after' parameter."""
+        client, state, knowledge, local_client = test_app
+
+        response = await client.get("/observations/RED")
+        assert response.status == 400
+        assert "error" in await response.json()
+
+    async def test_returns_observations_after_requested_tick(self, test_app):
+        """Test server /observations endpoint with after parameter."""
         client, state, knowledge, local_client = test_app
 
         # Advance game before making request
         local_client.tick_game()
 
-        response = await client.get("/knowledge/RED?tick=1")
+        response = await client.get("/observations/RED?after=0")
         assert response.status == 200
 
         data = await response.json()
-        assert data["knowledge"]["tick"] >= 1
+        observations = data["observations"]
+        # Should have at least one observation with tick > 0
+        assert len(observations) > 0
+        for tick_str in observations.keys():
+            assert int(tick_str) > 0
 
-    async def test_returns_immediately_for_past_tick(self, test_app):
-        """Test server returns immediately if knowledge already at requested tick."""
+    async def test_returns_empty_for_current_tick(self, test_app):
+        """Test server returns empty observations if after == current tick."""
         client, state, knowledge, local_client = test_app
 
         # Advance to tick 2
         local_client.tick_game()
         local_client.tick_game()
 
+        # Request observations after tick 2 - should wait and timeout with empty
         start_time = time.time()
-        response = await client.get("/knowledge/RED?tick=1")
+        response = await client.get("/observations/RED?after=2")
         elapsed = time.time() - start_time
 
+        # Should timeout since no new observations
         assert response.status == 200
-        assert elapsed < 0.5  # Should be nearly instant
-        assert (await response.json())["knowledge"]["tick"] >= 1
+        data = await response.json()
+        assert data["observations"] == {}
 
     async def test_rejects_plan_for_invalid_team(self, test_app):
         """Test server /act endpoint rejects invalid team."""
@@ -464,13 +481,18 @@ def running_server() -> Iterator[RunningServerFixture]:
         Team.RED: PlayerKnowledge(Team.RED, 16, 16, state.now),
         Team.BLUE: PlayerKnowledge(Team.BLUE, 16, 16, state.now),
     }
-    local_client = LocalClient(state=state, knowledge=knowledge)
+    observation_store = ObservationStore()
+    local_client = LocalClient(
+        state=state, knowledge=knowledge, observation_store=observation_store
+    )
 
     # Initialize knowledge with base observations
     local_client._let_all_players_observe()
 
     ready_event = threading.Event()
-    server = GameServer(state, knowledge, port=port, ready_event=ready_event)
+    server = GameServer(
+        state, knowledge, observation_store, port=port, ready_event=ready_event
+    )
     server.start()
     ready_event.wait(timeout=5.0)
 
@@ -618,6 +640,10 @@ class TestClientServerIntegration:
         red_knowledge = red_client.get_player_knowledge(Team.RED, tick=state.now)
         blue_knowledge = blue_client.get_player_knowledge(Team.BLUE, tick=state.now)
 
+        # Store tick values before advancing (knowledge is updated in-place)
+        old_red_tick = red_knowledge.tick
+        old_blue_tick = blue_knowledge.tick
+
         # Advance game using local_client
         local_client.tick_game()
 
@@ -625,5 +651,5 @@ class TestClientServerIntegration:
         updated_red = red_client.get_player_knowledge(Team.RED, tick=state.now)
         updated_blue = blue_client.get_player_knowledge(Team.BLUE, tick=state.now)
 
-        assert updated_red.tick > red_knowledge.tick
-        assert updated_blue.tick > blue_knowledge.tick
+        assert updated_red.tick > old_red_tick
+        assert updated_blue.tick > old_blue_tick
