@@ -353,12 +353,6 @@ class GameState:
         """Get a team's base region."""
         return self.base_regions[team]
 
-    # def set_unit_plan(self, unit_id: UnitId, plan: Plan) -> None:
-    #     unit = self.units[unit_id]
-    #     if not unit.is_in_base(self):
-    #         raise ValueError(f"Unit {unit_id} is not in base")
-    #     unit.plan = plan
-
     def add_unit(self, unit: Unit) -> None:
         # breakpoint()
         self.units[unit.id] = unit
