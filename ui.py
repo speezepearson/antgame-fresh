@@ -148,31 +148,33 @@ def format_plan(plan: Plan, unit: Unit) -> list[str]:
     return lines
 
 
-# Drawing helpers (operate relative to section coordinates)
+# Drawing helpers (use absolute window coordinates with offset)
 CELL_BRIGHTNESS_HALFLIFE = 100
 
 
-def draw_grid(width: int, height: int, grid_width: int, grid_height: int) -> None:
-    """Draw grid lines within section (0,0 at bottom-left)."""
+def draw_grid(offset_x: int, offset_y: int, width: int, height: int, grid_width: int, grid_height: int) -> None:
+    """Draw grid lines at offset position."""
     for x in range(grid_width + 1):
-        x_pos = x * TILE_SIZE
-        arcade.draw_line(x_pos, 0, x_pos, height, (50, 50, 50))
+        x_pos = offset_x + x * TILE_SIZE
+        arcade.draw_line(x_pos, offset_y, x_pos, offset_y + height, (50, 50, 50))
     for y in range(grid_height + 1):
-        y_pos = y * TILE_SIZE
-        arcade.draw_line(0, y_pos, width, y_pos, (50, 50, 50))
+        y_pos = offset_y + y * TILE_SIZE
+        arcade.draw_line(offset_x, y_pos, offset_x + width, y_pos, (50, 50, 50))
 
 
-def draw_base_cell(pos: Pos, team: Team, map_height: int) -> None:
+def draw_base_cell(pos: Pos, team: Team, offset_x: int, offset_y: int, map_height: int) -> None:
     """Draw a base region cell."""
     tint_color = (80, 40, 40) if team == Team.RED else (40, 40, 200)
-    left = pos.x * TILE_SIZE
-    bottom = map_height - (pos.y + 1) * TILE_SIZE
+    left = offset_x + pos.x * TILE_SIZE
+    bottom = offset_y + map_height - (pos.y + 1) * TILE_SIZE
     arcade.draw_lbwh_rectangle_filled(left, bottom, TILE_SIZE, TILE_SIZE, tint_color)
 
 
 def draw_unit_at(
     team: Team,
     pos: Pos,
+    offset_x: int,
+    offset_y: int,
     map_height: int,
     selected: bool = False,
     outline_only: bool = False,
@@ -180,8 +182,8 @@ def draw_unit_at(
 ) -> None:
     """Draw a unit at grid position."""
     color = (255, 100, 100) if team == Team.RED else (100, 100, 255)
-    center_x = pos.x * TILE_SIZE + TILE_SIZE // 2
-    center_y = map_height - (pos.y * TILE_SIZE + TILE_SIZE // 2)
+    center_x = offset_x + pos.x * TILE_SIZE + TILE_SIZE // 2
+    center_y = offset_y + map_height - (pos.y * TILE_SIZE + TILE_SIZE // 2)
 
     if unit_type == UnitType.SCOUT:
         size = TILE_SIZE // 3
@@ -205,12 +207,12 @@ def draw_unit_at(
             arcade.draw_circle_outline(center_x, center_y, radius + 3, (255, 255, 0), 2)
 
 
-def draw_food(food: dict[Pos, int], map_height: int, outline_only: bool = False) -> None:
+def draw_food(food: dict[Pos, int], offset_x: int, offset_y: int, map_height: int, outline_only: bool = False) -> None:
     """Draw food as small green dots."""
     radius = 3
     for pos, count in food.items():
-        tile_x = pos.x * TILE_SIZE
-        tile_y = map_height - (pos.y + 1) * TILE_SIZE
+        tile_x = offset_x + pos.x * TILE_SIZE
+        tile_y = offset_y + map_height - (pos.y + 1) * TILE_SIZE
 
         if count == 1:
             positions = [(TILE_SIZE // 2, TILE_SIZE // 2)]
@@ -284,12 +286,13 @@ class GodMapSection(Section):
         state = self.lifecycle.state
         map_pixel_width = self.grid_width * TILE_SIZE
         map_pixel_height = self.grid_height * TILE_SIZE
+        ox, oy = int(self.left), int(self.bottom)
 
-        arcade.draw_lbwh_rectangle_filled(0, 0, map_pixel_width, map_pixel_height, (30, 30, 30))
+        arcade.draw_lbwh_rectangle_filled(ox, oy, map_pixel_width, map_pixel_height, (30, 30, 30))
 
         if state is None:
-            text_x = map_pixel_width // 2
-            text_y = map_pixel_height // 2
+            text_x = ox + map_pixel_width // 2
+            text_y = oy + map_pixel_height // 2
             arcade.draw_text(
                 "God view not available in client mode",
                 text_x, text_y, (100, 100, 100),
@@ -297,17 +300,17 @@ class GodMapSection(Section):
             )
             return
 
-        draw_grid(map_pixel_width, map_pixel_height, self.grid_width, self.grid_height)
+        draw_grid(ox, oy, map_pixel_width, map_pixel_height, self.grid_width, self.grid_height)
 
         for pos in state.get_base_region(Team.RED).cells:
-            draw_base_cell(pos, Team.RED, map_pixel_height)
+            draw_base_cell(pos, Team.RED, ox, oy, map_pixel_height)
         for pos in state.get_base_region(Team.BLUE).cells:
-            draw_base_cell(pos, Team.BLUE, map_pixel_height)
+            draw_base_cell(pos, Team.BLUE, ox, oy, map_pixel_height)
 
-        draw_food(state.food, map_pixel_height)
+        draw_food(state.food, ox, oy, map_pixel_height)
 
         for unit in state.units.values():
-            draw_unit_at(unit.team, unit.pos, map_pixel_height, unit_type=unit.unit_type)
+            draw_unit_at(unit.team, unit.pos, ox, oy, map_pixel_height, unit_type=unit.unit_type)
 
 
 class PlayerMapSection(Section):
@@ -573,8 +576,9 @@ class PlayerMapSection(Section):
 
         map_pixel_width = self.grid_width * TILE_SIZE
         map_pixel_height = self.grid_height * TILE_SIZE
+        ox, oy = int(self.left), int(self.bottom)
 
-        arcade.draw_lbwh_rectangle_filled(0, 0, map_pixel_width, map_pixel_height, (0, 0, 0))
+        arcade.draw_lbwh_rectangle_filled(ox, oy, map_pixel_width, map_pixel_height, (0, 0, 0))
 
         cur_observations = logbook.get(view_t, {})
 
@@ -583,36 +587,36 @@ class PlayerMapSection(Section):
             age = view_t - last_observed_tick
             brightness = int(80 * (2 ** (-(age / CELL_BRIGHTNESS_HALFLIFE))))
             brightness = max(0, min(80, brightness))
-            cell_left = pos.x * TILE_SIZE
-            cell_bottom = map_pixel_height - (pos.y + 1) * TILE_SIZE
+            cell_left = ox + pos.x * TILE_SIZE
+            cell_bottom = oy + map_pixel_height - (pos.y + 1) * TILE_SIZE
             arcade.draw_lbwh_rectangle_filled(cell_left, cell_bottom, TILE_SIZE, TILE_SIZE, (brightness, brightness, brightness))
 
-        draw_grid(map_pixel_width, map_pixel_height, self.grid_width, self.grid_height)
+        draw_grid(ox, oy, map_pixel_width, map_pixel_height, self.grid_width, self.grid_height)
 
         if freeze_frame is None:
             for pos, (t, contents_list) in knowledge.logbook.last_observations_by_pos.items():
                 for contents in sorted(contents_list, key=lambda x: (isinstance(x, UnitPresent), isinstance(x, FoodPresent))):
                     if isinstance(contents, BasePresent):
-                        draw_base_cell(pos, contents.team, map_pixel_height)
+                        draw_base_cell(pos, contents.team, ox, oy, map_pixel_height)
                     elif isinstance(contents, UnitPresent):
                         if pos not in cur_observations and contents.team == self.team:
                             continue
                         draw_unit_at(
-                            contents.team, pos, map_pixel_height,
+                            contents.team, pos, ox, oy, map_pixel_height,
                             outline_only=pos not in cur_observations,
                             unit_type=contents.unit_type,
                         )
                     elif isinstance(contents, FoodPresent):
-                        draw_food({pos: contents.count}, map_pixel_height, outline_only=pos not in cur_observations)
+                        draw_food({pos: contents.count}, ox, oy, map_pixel_height, outline_only=pos not in cur_observations)
         else:
             for pos, contents_list in logbook.get(freeze_frame, {}).items():
                 for contents in sorted(contents_list, key=lambda x: (isinstance(x, UnitPresent), isinstance(x, FoodPresent))):
                     if isinstance(contents, BasePresent):
-                        draw_base_cell(pos, contents.team, map_pixel_height)
+                        draw_base_cell(pos, contents.team, ox, oy, map_pixel_height)
                     elif isinstance(contents, UnitPresent):
-                        draw_unit_at(contents.team, pos, map_pixel_height, unit_type=contents.unit_type)
+                        draw_unit_at(contents.team, pos, ox, oy, map_pixel_height, unit_type=contents.unit_type)
                     elif isinstance(contents, FoodPresent):
-                        draw_food({pos: contents.count}, map_pixel_height)
+                        draw_food({pos: contents.count}, ox, oy, map_pixel_height)
 
         # Draw predicted positions
         for unit_id, trajectory in knowledge.expected_trajectories.items():
@@ -620,7 +624,7 @@ class PlayerMapSection(Section):
             if predicted_pos is None:
                 continue
             unit_type = knowledge.last_in_base[unit_id][1].unit_type
-            draw_unit_at(self.team, predicted_pos, map_pixel_height, outline_only=True, unit_type=unit_type)
+            draw_unit_at(self.team, predicted_pos, ox, oy, map_pixel_height, outline_only=True, unit_type=unit_type)
 
     def on_update(self, delta_time: float) -> None:
         """Update UI state."""
